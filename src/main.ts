@@ -1,114 +1,117 @@
-import {
-	Editor,
-	MarkdownView,
-	MarkdownFileInfo,
-	Modal,
-	Notice,
-	Plugin,
-} from 'obsidian';
-import {
-	DEFAULT_SETTINGS,
-	MyPluginSettings,
-	SampleSettingTab,
-} from './settings';
+import { Plugin, TFile, CachedMetadata, Notice } from "obsidian";
+import { CompassSyncSettings, DEFAULT_SETTINGS } from "./types";
+import { CompassSettingTab } from "./settings";
 
-// Remember to rename these classes and interfaces!
+export default class CompassSyncPlugin extends Plugin {
+	settings!: CompassSyncSettings;
 
-export default class MyPlugin extends Plugin {
-	settings!: MyPluginSettings;
+	// Guard flags and safety timeouts
+	private writingFiles: Set<string> = new Set();
+	private writingTimers: Map<string, number> = new Map();
+
+	// Debounce timer
+	private timeoutId: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
+		this.addSettingTab(new CompassSettingTab(this.app, this));
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+		this.registerEvent(
+			this.app.metadataCache.on("changed", (file, _data, cache) => {
+				// Debounce: Wait 300ms for the user to finish typing before reacting
+				if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			},
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (
-				editor: Editor,
-				_ctx: MarkdownView | MarkdownFileInfo,
-			) => {
-				editor.replaceSelection('Sample editor command');
-			},
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView =
-					this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			},
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(activeDocument, 'click', (_evt: MouseEvent) => {
-			new Notice('Click');
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(
-			window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000),
+				this.timeoutId = window.setTimeout(() => {
+					void this.handleFileChange(file, cache);
+				}, 300);
+			})
 		);
 	}
 
-	onunload() {}
+	async handleFileChange(file: TFile, cache: CachedMetadata) {
+		// 1. CLEAR THE GUARD SAFELY
+		if (this.writingFiles.has(file.path)) {
+			this.clearWritingGuard(file.path);
+			return;
+		}
+
+		const frontmatter = cache.frontmatter;
+		if (!frontmatter) return;
+
+		for (const pair of this.settings.relations) {
+			if (!pair.forward || !pair.inverse) continue;
+
+			const targets = frontmatter[pair.forward];
+			if (!targets) continue;
+
+			const targetList = Array.isArray(targets) ? targets : [targets];
+
+			for (const target of targetList) {
+				if (typeof target !== "string") continue; // Type safety check
+
+				// Clean regex: removes brackets, aliases (|), and headers (#)
+				const cleanName = target.replace(/^\[\[(.*?)\]\]$/, "$1").split("|")[0].split("#")[0];
+				const targetFile = this.app.metadataCache.getFirstLinkpathDest(cleanName, file.path);
+
+				if (targetFile instanceof TFile) {
+					await this.updateTargetNote(targetFile, pair.inverse, file.basename);
+				}
+			}
+		}
+	}
+
+	async updateTargetNote(targetFile: TFile, inverseKey: string, sourceNoteName: string) {
+		this.setWritingGuard(targetFile.path);
+
+		try {
+			await this.app.fileManager.processFrontMatter(targetFile, (fm) => {
+				const sourceLink = `[[${sourceNoteName}]]`;
+
+				if (!fm[inverseKey]) {
+					fm[inverseKey] = sourceLink;
+				} else if (!fm[inverseKey].includes(sourceLink)) {
+					if (typeof fm[inverseKey] === "string") {
+						fm[inverseKey] = [fm[inverseKey], sourceLink];
+					} else if (Array.isArray(fm[inverseKey])) {
+						fm[inverseKey].push(sourceLink);
+					}
+				}
+			});
+		} catch (error) {
+			// 2. ERROR HANDLING: If the write fails, unlock the file and warn the user
+			this.clearWritingGuard(targetFile.path);
+			new Notice(`Plugin Error: Could not update ${targetFile.basename}. Check if YAML is valid.`);
+			console.error("Compass Sync Error:", error);
+		}
+	}
+
+	// --- SAFETY HELPERS ---
+
+	private setWritingGuard(path: string) {
+		this.writingFiles.add(path);
+		// Safety net: Force clear the lock after 3 seconds if the echo never arrives
+		const timer = window.setTimeout(() => {
+			this.clearWritingGuard(path);
+		}, 3000);
+		this.writingTimers.set(path, timer);
+	}
+
+	private clearWritingGuard(path: string) {
+		this.writingFiles.delete(path);
+		const timer = this.writingTimers.get(path);
+		if (timer) {
+			window.clearTimeout(timer);
+			this.writingTimers.delete(path);
+		}
+	}
+
+	// --- SETTINGS ---
 
 	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MyPluginSettings>,
-		);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
 	}
 }
