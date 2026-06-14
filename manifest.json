@@ -1,11 +1,11 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "Frontmatter-Sync",
+	"name": "Frontmatter Sync",
 	"version": "1.0.0",
 	"minAppVersion": "1.0.0",
 	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"author": "Melik Özcelik",
+	"authorUrl": "https://github.com/alpakadev/Frontmatter-Sync",
+	"fundingUrl": "https://github.com/alpakadev/Frontmatter-Sync",
 	"isDesktopOnly": false
 }
