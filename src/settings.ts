@@ -1,5 +1,6 @@
-import { App, PluginSettingTab, Setting, AbstractInputSuggest } from "obsidian";
+import { App, PluginSettingTab, Setting, AbstractInputSuggest, Modal } from "obsidian";
 import type CompassSyncPlugin from "./main";
+import { PendingSync } from "./types";
 
 // --- NATIVE OBSIDIAN SUGGESTION MENU ---
 class PropertySuggest extends AbstractInputSuggest<string> {
@@ -73,6 +74,59 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 	}
 }
 
+// --- BULK SYNC MODAL ---
+class BulkSyncModal extends Modal {
+	constructor(app: App, private plugin: CompassSyncPlugin, private pending: PendingSync[]) {
+		super(app);
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("h2", { text: "Bulk Sync Preview" });
+
+		if (this.pending.length === 0) {
+			contentEl.createEl("p", { text: "Your vault is completely synchronized. No missing bidirectional links found." });
+			new Setting(contentEl).addButton(btn => btn.setButtonText("Close").onClick(() => this.close()));
+			return;
+		}
+
+		contentEl.createEl("p", { text: `Found ${this.pending.length} missing bidirectional link(s). Applying changes will automatically write the following properties:` });
+
+		// Scrollable list container
+		const listContainer = contentEl.createDiv({
+			attr: { style: "max-height: 300px; overflow-y: auto; margin-bottom: 20px; border: 1px solid var(--background-modifier-border); padding: 10px; border-radius: 5px; background: var(--background-secondary);" }
+		});
+
+		for (const p of this.pending) {
+			listContainer.createDiv({
+				text: `📝 Add "${p.inverseKey}: [[${p.sourceName}]]" to note "${p.targetFile.basename}"`,
+				attr: { style: "margin-bottom: 6px; font-size: 0.9em; font-family: var(--font-monospace);" }
+			});
+		}
+
+		new Setting(contentEl)
+			.addButton((btn) => btn
+				.setButtonText("Close")
+				.onClick(() => this.close())
+			)
+			.addButton((btn) => btn
+				.setButtonText("Apply Changes")
+				.setCta()
+				.onClick(async () => {
+					btn.setButtonText("Applying...").setDisabled(true);
+					await this.plugin.executeBulkSync(this.pending);
+					this.close();
+				})
+			);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+// --- MAIN SETTINGS TAB ---
 export class CompassSettingTab extends PluginSettingTab {
 	plugin: CompassSyncPlugin;
 
@@ -86,6 +140,23 @@ export class CompassSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		containerEl.createEl("h2", { text: "Relation Sync Settings" });
+
+		// --- VAULT MAINTENANCE SECTION ---
+		containerEl.createEl("h3", { text: "Vault Maintenance" });
+
+		new Setting(containerEl)
+			.setName("Bulk Sync Missing Relations")
+			.setDesc("Scan the entire vault for missing bidirectional links and add them automatically. A preview will be shown before changes are applied.")
+			.addButton((btn) => btn
+				.setButtonText("Run Scan")
+				.setWarning() // This natively makes the button red in Obsidian
+				.onClick(async () => {
+					btn.setButtonText("Scanning...").setDisabled(true);
+					const pending = await this.plugin.previewBulkSync();
+					btn.setButtonText("Run Scan").setDisabled(false);
+					new BulkSyncModal(this.app, this.plugin, pending).open();
+				})
+			);
 
 		// --- NOTIFICATIONS SECTION ---
 		containerEl.createEl("h3", { text: "Notifications" });
@@ -165,28 +236,24 @@ export class CompassSettingTab extends PluginSettingTab {
 		}
 		const keysArray = Array.from(rawKeys).sort();
 
-		// Create a specific container for the draggable list
 		const listContainer = containerEl.createDiv();
 
-		// Draw existing relation pairs
 		this.plugin.settings.relations.forEach((pair, index) => {
-			// Backwards compatibility for data saved before the "enabled" feature
 			if (pair.enabled === undefined) pair.enabled = true;
 
 			let forwardInput: HTMLInputElement | null = null;
 			let inverseInput: HTMLInputElement | null = null;
 
 			const setting = new Setting(listContainer)
-				.setName(`≡ Pair #${index + 1}`) // Visual grip indicator
+				.setName(`≡ Pair #${index + 1}`)
 
-				// Enable/Disable toggle button (Compact Eye icon)
 				.addExtraButton((btn) => btn
 					.setIcon(pair.enabled ? "eye" : "eye-off")
 					.setTooltip(pair.enabled ? "Pause relation" : "Enable relation")
 					.onClick(async () => {
 						pair.enabled = !pair.enabled;
 						await this.plugin.saveSettings();
-						this.display(); // Re-render to dim/un-dim the row
+						this.display();
 					})
 				)
 
@@ -225,13 +292,11 @@ export class CompassSettingTab extends PluginSettingTab {
 
 			const el = setting.settingEl;
 
-			// Visual styling for disabled rows
 			if (!pair.enabled) {
 				el.style.opacity = "0.4";
 				el.style.filter = "grayscale(100%)";
 			}
 
-			// --- DRAG AND DROP MECHANICS ---
 			el.draggable = true;
 			el.style.cursor = "grab";
 
@@ -239,7 +304,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				if (e.dataTransfer) {
 					e.dataTransfer.setData("text/plain", index.toString());
 					e.dataTransfer.effectAllowed = "move";
-					el.style.opacity = "0.3"; // Ghosting effect while dragging
+					el.style.opacity = "0.3";
 				}
 			});
 
@@ -249,7 +314,7 @@ export class CompassSettingTab extends PluginSettingTab {
 			});
 
 			el.addEventListener("dragover", (e) => {
-				e.preventDefault(); // Required to allow dropping
+				e.preventDefault();
 				if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
 				el.style.borderTop = "2px solid var(--interactive-accent)";
 			});
@@ -266,17 +331,15 @@ export class CompassSettingTab extends PluginSettingTab {
 				const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
 
 				if (!isNaN(fromIndex) && fromIndex !== index) {
-					// Swap items in the array
 					const relations = this.plugin.settings.relations;
 					const [movedItem] = relations.splice(fromIndex, 1);
 					relations.splice(index, 0, movedItem);
 
 					await this.plugin.saveSettings();
-					this.display(); // Re-render the correctly ordered list
+					this.display();
 				}
 			});
 
-			// Attach the native Obsidian Suggestion Menus
 			if (forwardInput && inverseInput) {
 				new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
 				new PropertySuggest(this.app, inverseInput, keysArray);

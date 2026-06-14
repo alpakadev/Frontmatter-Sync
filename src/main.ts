@@ -1,5 +1,5 @@
 import { Plugin, TFile, CachedMetadata, Notice } from "obsidian";
-import { CompassSyncSettings, DEFAULT_SETTINGS } from "./types";
+import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync } from "./types";
 import { CompassSettingTab } from "./settings";
 
 export default class CompassSyncPlugin extends Plugin {
@@ -54,7 +54,6 @@ export default class CompassSyncPlugin extends Plugin {
 		const previousFm = this.prevFm.get(file.path) || {};
 
 		for (const pair of this.settings.relations) {
-			// Skip deactivated pairs
 			if (!pair.enabled) continue;
 			if (!pair.forward || !pair.inverse) continue;
 
@@ -67,6 +66,78 @@ export default class CompassSyncPlugin extends Plugin {
 
 		this.prevFm.set(file.path, JSON.parse(JSON.stringify(currentFm)));
 	}
+
+	// --- BULK SYNC ENGINE ---
+
+	async previewBulkSync(): Promise<PendingSync[]> {
+		const pending: PendingSync[] = [];
+
+		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
+			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
+			if (!(sourceFile instanceof TFile)) continue;
+
+			for (const pair of this.settings.relations) {
+				if (!pair.enabled || !pair.forward || !pair.inverse) continue;
+
+				// 1. Scan Forward -> Inverse
+				const targetsForward = this.extractLinks(previousFm[pair.forward]);
+				for (const targetName of targetsForward.valid) {
+					const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
+					if (targetFile instanceof TFile) {
+						const targetFm = this.prevFm.get(targetFile.path) || {};
+						const inverseLinks = this.extractLinks(targetFm[pair.inverse]);
+
+						// If target does not point back, flag it
+						if (!inverseLinks.valid.includes(sourceFile.basename)) {
+							pending.push({
+								sourceName: sourceFile.basename,
+								sourceFile: sourceFile,
+								targetFile: targetFile,
+								inverseKey: pair.inverse
+							});
+						}
+					}
+				}
+
+				// 2. Scan Inverse -> Forward
+				if (pair.forward !== pair.inverse) {
+					const targetsInverse = this.extractLinks(previousFm[pair.inverse]);
+					for (const targetName of targetsInverse.valid) {
+						const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
+						if (targetFile instanceof TFile) {
+							const targetFm = this.prevFm.get(targetFile.path) || {};
+							const forwardLinks = this.extractLinks(targetFm[pair.forward]);
+
+							// If target does not point back, flag it
+							if (!forwardLinks.valid.includes(sourceFile.basename)) {
+								pending.push({
+									sourceName: sourceFile.basename,
+									sourceFile: sourceFile,
+									targetFile: targetFile,
+									inverseKey: pair.forward
+								});
+							}
+						}
+					}
+				}
+			}
+		}
+		return pending;
+	}
+
+	async executeBulkSync(pending: PendingSync[]) {
+		for (const sync of pending) {
+			await this.modifyTargetNote(
+				sync.targetFile.basename,
+				sync.sourceFile,
+				sync.sourceName,
+				sync.inverseKey,
+				"add"
+			);
+		}
+		new Notice(`Bulk Sync Complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
+	}
+
 
 	// --- STRICT LINK PARSING ---
 
@@ -214,7 +285,6 @@ export default class CompassSyncPlugin extends Plugin {
 			if (!(sourceFile instanceof TFile)) continue;
 
 			for (const pair of this.settings.relations) {
-				// Skip deactivated pairs
 				if (!pair.enabled) continue;
 				if (!pair.forward || !pair.inverse) continue;
 
@@ -306,7 +376,6 @@ export default class CompassSyncPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 
-		// Retroactively add 'enabled' to existing pairs created before this feature existed
 		if (this.settings.relations) {
 			for (const pair of this.settings.relations) {
 				if (pair.enabled === undefined) pair.enabled = true;

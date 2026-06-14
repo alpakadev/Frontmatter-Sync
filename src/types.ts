@@ -1,3 +1,5 @@
+import { TFile } from "obsidian";
+
 export interface NotificationSettings {
     backgroundSync: boolean;
     plainTextWarning: boolean;
@@ -8,12 +10,20 @@ export interface NotificationSettings {
 export interface RelationPair {
     forward: string;
     inverse: string;
-    enabled: boolean; // NEW: Tracks whether the relation is active
+    enabled: boolean;
 }
 
 export interface CompassSyncSettings {
     relations: RelationPair[];
     notifications: NotificationSettings;
+}
+
+// Data structure to pass preview information to the UI Modal
+export interface PendingSync {
+    sourceName: string;
+    sourceFile: TFile;
+    targetFile: TFile;
+    inverseKey: string;
 }
 
 export const DEFAULT_SETTINGS: CompassSyncSettings = {
