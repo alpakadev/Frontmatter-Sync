@@ -62,7 +62,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				})
 			);
 
-
 		// --- RELATIONS SECTION ---
 		containerEl.createEl("h3", { text: "Relation Pairs" });
 
@@ -80,29 +79,61 @@ export class CompassSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// --- DATALIST FOR PROPERTY SUGGESTIONS ---
+		const datalistId = "compass-property-keys";
+		const datalist = containerEl.createEl("datalist");
+		datalist.id = datalistId;
+
+		const keys = new Set<string>();
+
+		// Use Obsidian's native property keys API if available, otherwise fallback to scanning files
+		if (typeof (this.app.metadataCache as any).getAllPropertyKeys === "function") {
+			const props = (this.app.metadataCache as any).getAllPropertyKeys();
+			props.forEach((p: string) => keys.add(p));
+		} else {
+			for (const file of this.app.vault.getMarkdownFiles()) {
+				const cache = this.app.metadataCache.getFileCache(file);
+				if (cache?.frontmatter) {
+					Object.keys(cache.frontmatter).forEach(k => keys.add(k));
+				}
+			}
+		}
+
+		keys.forEach(key => {
+			datalist.createEl("option", { value: key });
+		});
+
+		// --- RENDER RELATION PAIRS ---
 		this.plugin.settings.relations.forEach((pair, index) => {
+			let forwardInput: HTMLInputElement | null = null;
+			let inverseInput: HTMLInputElement | null = null;
+
 			new Setting(containerEl)
 				.setName(`Relation #${index + 1}`)
 
-				.addText((text) =>
-					text
-						.setPlaceholder("e.g., south")
+				.addText((text) => {
+					forwardInput = text.inputEl;
+					forwardInput.setAttribute("list", datalistId); // Attach auto-complete
+
+					text.setPlaceholder("e.g., south")
 						.setValue(pair.forward)
 						.onChange(async (value) => {
 							pair.forward = value;
 							await this.plugin.saveSettings();
-						})
-				)
+						});
+				})
 
-				.addText((text) =>
-					text
-						.setPlaceholder("e.g., north")
+				.addText((text) => {
+					inverseInput = text.inputEl;
+					inverseInput.setAttribute("list", datalistId); // Attach auto-complete
+
+					text.setPlaceholder("e.g., north")
 						.setValue(pair.inverse)
 						.onChange(async (value) => {
 							pair.inverse = value;
 							await this.plugin.saveSettings();
-						})
-				)
+						});
+				})
 
 				.addExtraButton((btn) =>
 					btn
@@ -114,6 +145,16 @@ export class CompassSettingTab extends PluginSettingTab {
 							this.display();
 						})
 				);
+
+			// Add "Enter" key navigation from Forward to Inverse input
+			if (forwardInput && inverseInput) {
+				forwardInput.addEventListener("keydown", (e: KeyboardEvent) => {
+					if (e.key === "Enter") {
+						e.preventDefault();
+						inverseInput!.focus();
+					}
+				});
+			}
 		});
 	}
 }
