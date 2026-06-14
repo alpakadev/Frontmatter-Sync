@@ -11,32 +11,31 @@ export class CompassSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
-		containerEl.empty(); // Clear the settings screen before drawing
+		containerEl.empty();
 
 		containerEl.createEl("h2", { text: "Relation Sync Settings" });
 
 		// 1. "Add New" Button
 		new Setting(containerEl)
 			.setName("Add a new relation pair")
-			.setDesc("Create a new forward and inverse relationship.")
+			.setDesc("Create a bidirectional link (e.g., south / north, or parent / child).")
 			.addButton((btn) =>
 				btn
 					.setButtonText("Add +")
-					.setCta() // Makes the button stand out
+					.setCta()
 					.onClick(async () => {
-						// Add a blank pair to our settings
+						// Push a blank pair into the array
 						this.plugin.settings.relations.push({ forward: "", inverse: "" });
 						await this.plugin.saveSettings();
-						this.display(); // Redraw the screen to show the new inputs
+						this.display();
 					})
 			);
 
 		// 2. Draw existing relation pairs
 		this.plugin.settings.relations.forEach((pair, index) => {
-			const setting = new Setting(containerEl)
+			new Setting(containerEl)
 				.setName(`Relation #${index + 1}`)
 
-				// Input for the Forward direction
 				.addText((text) =>
 					text
 						.setPlaceholder("e.g., south")
@@ -47,7 +46,6 @@ export class CompassSettingTab extends PluginSettingTab {
 						})
 				)
 
-				// Input for the Inverse direction
 				.addText((text) =>
 					text
 						.setPlaceholder("e.g., north")
@@ -58,15 +56,14 @@ export class CompassSettingTab extends PluginSettingTab {
 						})
 				)
 
-				// Delete button for this pair
 				.addExtraButton((btn) =>
 					btn
 						.setIcon("trash")
 						.setTooltip("Delete relation")
 						.onClick(async () => {
-							this.plugin.settings.relations.splice(index, 1); // Remove from array
+							this.plugin.settings.relations.splice(index, 1);
 							await this.plugin.saveSettings();
-							this.display(); // Redraw the screen
+							this.display();
 						})
 				);
 		});

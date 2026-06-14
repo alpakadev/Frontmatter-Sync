@@ -1,14 +1,12 @@
-export interface CompassRelation {
+export interface RelationPair {
     forward: string;
     inverse: string;
 }
 
 export interface CompassSyncSettings {
-    relations: CompassRelation[];
+    relations: RelationPair[];
 }
 
 export const DEFAULT_SETTINGS: CompassSyncSettings = {
-    relations: [
-        { forward: "south", inverse: "north" } // A default example so they know how it works
-    ]
+    relations: [] // Completely empty predefined links!
 };
