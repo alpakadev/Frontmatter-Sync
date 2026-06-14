@@ -8,6 +8,7 @@ export interface NotificationSettings {
 export interface RelationPair {
     forward: string;
     inverse: string;
+    enabled: boolean; // NEW: Tracks whether the relation is active
 }
 
 export interface CompassSyncSettings {

@@ -54,6 +54,8 @@ export default class CompassSyncPlugin extends Plugin {
 		const previousFm = this.prevFm.get(file.path) || {};
 
 		for (const pair of this.settings.relations) {
+			// Skip deactivated pairs
+			if (!pair.enabled) continue;
 			if (!pair.forward || !pair.inverse) continue;
 
 			await this.processRelation(file, pair.forward, pair.inverse, currentFm, previousFm);
@@ -212,6 +214,8 @@ export default class CompassSyncPlugin extends Plugin {
 			if (!(sourceFile instanceof TFile)) continue;
 
 			for (const pair of this.settings.relations) {
+				// Skip deactivated pairs
+				if (!pair.enabled) continue;
 				if (!pair.forward || !pair.inverse) continue;
 
 				const targetsForward = this.extractLinks(previousFm[pair.forward]);
@@ -241,13 +245,11 @@ export default class CompassSyncPlugin extends Plugin {
 				attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" }
 			});
 
-			// Append "Sync Now" first so it stays on the left
 			const syncBtn = btnContainer.createEl("button", {
 				text: "Sync Now",
 				cls: "mod-cta"
 			});
 
-			// Append "Ignore" second so it is pushed to the right
 			const ignoreBtn = btnContainer.createEl("button", {
 				text: "Ignore"
 			});
@@ -302,8 +304,14 @@ export default class CompassSyncPlugin extends Plugin {
 	async loadSettings() {
 		const loadedData = await this.loadData();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
-		// Deep merge to ensure the nested notifications object isn't overwritten by older versions
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
+
+		// Retroactively add 'enabled' to existing pairs created before this feature existed
+		if (this.settings.relations) {
+			for (const pair of this.settings.relations) {
+				if (pair.enabled === undefined) pair.enabled = true;
+			}
+		}
 	}
 
 	async saveSettings() {

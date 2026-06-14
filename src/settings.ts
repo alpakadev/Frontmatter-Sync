@@ -14,7 +14,6 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 	) {
 		super(app, inputEl);
 
-		// Handle regular Enter presses when menu is closed or no selection made
 		inputEl.addEventListener("keydown", (e: KeyboardEvent) => {
 			if (e.key === "Enter" && !e.defaultPrevented) {
 				e.preventDefault();
@@ -32,7 +31,6 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 	}
 
 	getSuggestions(inputStr: string): string[] {
-		// Reset the "show all" flag if the user continues typing
 		if (this.lastInput !== inputStr) {
 			this.showAll = false;
 			this.lastInput = inputStr;
@@ -41,14 +39,8 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 		const query = inputStr.toLowerCase();
 		const filtered = this.keys.filter(k => k.toLowerCase().includes(query));
 
-		if (this.showAll) {
-			return filtered;
-		}
-
-		// Cap at 20 and append the "..." expansion button
-		if (filtered.length > 20) {
-			return [...filtered.slice(0, 20), "__MORE__"];
-		}
+		if (this.showAll) return filtered;
+		if (filtered.length > 20) return [...filtered.slice(0, 20), "__MORE__"];
 
 		return filtered;
 	}
@@ -67,7 +59,6 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 	selectSuggestion(item: string, evt: MouseEvent | KeyboardEvent): void {
 		if (item === "__MORE__") {
 			this.showAll = true;
-			// Wait for internal close logic to finish, then reopen with all items
 			window.setTimeout(() => {
 				this.inputEl.focus();
 				this.inputEl.dispatchEvent(new Event('input'));
@@ -75,16 +66,12 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 			return;
 		}
 
-		// Apply the selected suggestion
 		this.inputEl.value = item;
 		this.inputEl.dispatchEvent(new Event('input'));
 		this.close();
-
-		// Automatically focus the inverse property box!
 		this.jumpToNext();
 	}
 }
-
 
 export class CompassSettingTab extends PluginSettingTab {
 	plugin: CompassSyncPlugin;
@@ -147,25 +134,23 @@ export class CompassSettingTab extends PluginSettingTab {
 				})
 			);
 
-
 		// --- RELATIONS SECTION ---
 		containerEl.createEl("h3", { text: "Relation Pairs" });
 
 		new Setting(containerEl)
 			.setName("Add a new relation pair")
-			.setDesc("Create a bidirectional link (e.g., south / north, or parent / child).")
+			.setDesc("Create a bidirectional link. You can drag and drop pairs to reorder them.")
 			.addButton((btn) =>
 				btn
 					.setButtonText("Add +")
 					.setCta()
 					.onClick(async () => {
-						this.plugin.settings.relations.push({ forward: "", inverse: "" });
+						this.plugin.settings.relations.push({ forward: "", inverse: "", enabled: true });
 						await this.plugin.saveSettings();
 						this.display();
 					})
 			);
 
-		// Extract all existing property keys from the vault for suggestions
 		const rawKeys = new Set<string>();
 		if (typeof (this.app.metadataCache as any).getAllPropertyKeys === "function") {
 			const props = (this.app.metadataCache as any).getAllPropertyKeys();
@@ -180,13 +165,30 @@ export class CompassSettingTab extends PluginSettingTab {
 		}
 		const keysArray = Array.from(rawKeys).sort();
 
+		// Create a specific container for the draggable list
+		const listContainer = containerEl.createDiv();
+
 		// Draw existing relation pairs
 		this.plugin.settings.relations.forEach((pair, index) => {
+			// Backwards compatibility for data saved before the "enabled" feature
+			if (pair.enabled === undefined) pair.enabled = true;
+
 			let forwardInput: HTMLInputElement | null = null;
 			let inverseInput: HTMLInputElement | null = null;
 
-			new Setting(containerEl)
-				.setName(`Relation #${index + 1}`)
+			const setting = new Setting(listContainer)
+				.setName(`≡ Pair #${index + 1}`) // Visual grip indicator
+
+				// Enable/Disable toggle button (Compact Eye icon)
+				.addExtraButton((btn) => btn
+					.setIcon(pair.enabled ? "eye" : "eye-off")
+					.setTooltip(pair.enabled ? "Pause relation" : "Enable relation")
+					.onClick(async () => {
+						pair.enabled = !pair.enabled;
+						await this.plugin.saveSettings();
+						this.display(); // Re-render to dim/un-dim the row
+					})
+				)
 
 				.addText((text) => {
 					forwardInput = text.inputEl;
@@ -221,10 +223,63 @@ export class CompassSettingTab extends PluginSettingTab {
 						})
 				);
 
-			// Attach the native Obsidian Suggestion Menus to the rendered inputs
+			const el = setting.settingEl;
+
+			// Visual styling for disabled rows
+			if (!pair.enabled) {
+				el.style.opacity = "0.4";
+				el.style.filter = "grayscale(100%)";
+			}
+
+			// --- DRAG AND DROP MECHANICS ---
+			el.draggable = true;
+			el.style.cursor = "grab";
+
+			el.addEventListener("dragstart", (e) => {
+				if (e.dataTransfer) {
+					e.dataTransfer.setData("text/plain", index.toString());
+					e.dataTransfer.effectAllowed = "move";
+					el.style.opacity = "0.3"; // Ghosting effect while dragging
+				}
+			});
+
+			el.addEventListener("dragend", () => {
+				el.style.opacity = pair.enabled ? "1" : "0.4";
+				el.style.borderTop = "";
+			});
+
+			el.addEventListener("dragover", (e) => {
+				e.preventDefault(); // Required to allow dropping
+				if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+				el.style.borderTop = "2px solid var(--interactive-accent)";
+			});
+
+			el.addEventListener("dragleave", () => {
+				el.style.borderTop = "";
+			});
+
+			el.addEventListener("drop", async (e) => {
+				e.preventDefault();
+				el.style.borderTop = "";
+
+				if (!e.dataTransfer) return;
+				const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
+
+				if (!isNaN(fromIndex) && fromIndex !== index) {
+					// Swap items in the array
+					const relations = this.plugin.settings.relations;
+					const [movedItem] = relations.splice(fromIndex, 1);
+					relations.splice(index, 0, movedItem);
+
+					await this.plugin.saveSettings();
+					this.display(); // Re-render the correctly ordered list
+				}
+			});
+
+			// Attach the native Obsidian Suggestion Menus
 			if (forwardInput && inverseInput) {
 				new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
-				new PropertySuggest(this.app, inverseInput, keysArray); // No next input to jump to
+				new PropertySuggest(this.app, inverseInput, keysArray);
 			}
 		});
 	}
