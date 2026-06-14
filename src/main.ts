@@ -23,7 +23,6 @@ export default class CompassSyncPlugin extends Plugin {
 			}
 		});
 
-		// Listen for standard cache changes
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file, _data, cache) => {
 				if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
@@ -33,7 +32,6 @@ export default class CompassSyncPlugin extends Plugin {
 			})
 		);
 
-		// NEW: Listen for new file creations to resolve "ghost links"
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
 				if (file instanceof TFile && file.extension === "md") {
@@ -234,18 +232,36 @@ export default class CompassSyncPlugin extends Plugin {
 			const notice = new Notice("", 0);
 			notice.noticeEl.empty();
 
-			notice.noticeEl.createSpan({
-				text: `Relation Sync: "${newFile.basename}" has ${pendingSyncs.length} pending backlink(s). `
+			// 1. Put the text in its own block with a bottom margin
+			notice.noticeEl.createDiv({
+				text: `Relation Sync: "${newFile.basename}" has ${pendingSyncs.length} pending backlink(s).`,
+				attr: { style: "margin-bottom: 12px;" }
 			});
 
-			const btn = notice.noticeEl.createEl("button", {
+			// 2. Create a Flexbox container to align buttons to the right
+			const btnContainer = notice.noticeEl.createDiv({
+				attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" }
+			});
+
+			// 3. Create the "Ignore" button (Secondary Action)
+			const ignoreBtn = btnContainer.createEl("button", {
+				text: "Ignore"
+			});
+
+			ignoreBtn.onclick = () => {
+				notice.hide();
+			};
+
+			// 4. Create the "Sync Now" button (Primary Action)
+			const syncBtn = btnContainer.createEl("button", {
 				text: "Sync Now",
-				cls: "mod-cta"
+				cls: "mod-cta" // Keeps the purple/accent color
 			});
 
-			btn.onclick = async () => {
-				btn.innerText = "Syncing...";
-				btn.disabled = true;
+			syncBtn.onclick = async () => {
+				syncBtn.innerText = "Syncing...";
+				syncBtn.disabled = true;
+				ignoreBtn.disabled = true; // Disable both buttons during sync
 
 				for (const sync of pendingSyncs) {
 					await this.modifyTargetNote(
