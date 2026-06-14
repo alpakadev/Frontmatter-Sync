@@ -1,3 +1,10 @@
+export interface NotificationSettings {
+    backgroundSync: boolean;
+    plainTextWarning: boolean;
+    ghostLinkWarning: boolean;
+    ghostLinkPrompt: boolean;
+}
+
 export interface RelationPair {
     forward: string;
     inverse: string;
@@ -5,8 +12,15 @@ export interface RelationPair {
 
 export interface CompassSyncSettings {
     relations: RelationPair[];
+    notifications: NotificationSettings;
 }
 
 export const DEFAULT_SETTINGS: CompassSyncSettings = {
-    relations: [] // Completely empty predefined links!
+    relations: [],
+    notifications: {
+        backgroundSync: true,
+        plainTextWarning: true,
+        ghostLinkWarning: true,
+        ghostLinkPrompt: true
+    }
 };

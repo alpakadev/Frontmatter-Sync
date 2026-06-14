@@ -56,10 +56,8 @@ export default class CompassSyncPlugin extends Plugin {
 		for (const pair of this.settings.relations) {
 			if (!pair.forward || !pair.inverse) continue;
 
-			// 1. Always process Forward -> Inverse
 			await this.processRelation(file, pair.forward, pair.inverse, currentFm, previousFm);
 
-			// 2. ONLY process Inverse -> Forward if they are different keys
 			if (pair.forward !== pair.inverse) {
 				await this.processRelation(file, pair.inverse, pair.forward, currentFm, previousFm);
 			}
@@ -74,14 +72,12 @@ export default class CompassSyncPlugin extends Plugin {
 		const trimmed = value.trim();
 		if (!trimmed) return { isValid: false, target: "" };
 
-		// 1. Match WikiLink: [[Note Name]] or [[Note Name|Alias]]
 		const wikiMatch = trimmed.match(/^\[\[(.*?)\]\]$/);
 		if (wikiMatch) {
 			const cleanName = wikiMatch[1].split("|")[0].split("#")[0].trim();
 			return { isValid: true, target: cleanName };
 		}
 
-		// 2. Match Markdown Link: [Alias](Note Name.md)
 		const mdMatch = trimmed.match(/^\[(.*?)\]\((.*?)\)$/);
 		if (mdMatch) {
 			let linkPath = mdMatch[2];
@@ -89,7 +85,6 @@ export default class CompassSyncPlugin extends Plugin {
 			return { isValid: true, target: linkPath };
 		}
 
-		// 3. Plain Text (Not a link)
 		return { isValid: false, target: trimmed };
 	}
 
@@ -120,8 +115,11 @@ export default class CompassSyncPlugin extends Plugin {
 		const previous = this.extractLinks(previousFm[key]);
 
 		const addedInvalid = current.invalid.filter(text => !previous.invalid.includes(text));
-		for (const text of addedInvalid) {
-			new Notice(`Relation Sync: "${text}" is plain text. Please use [[${text}]] in property '${key}' to sync.`);
+
+		if (this.settings.notifications.plainTextWarning) {
+			for (const text of addedInvalid) {
+				new Notice(`Relation Sync: "${text}" is plain text. Please use [[${text}]] in property '${key}' to sync.`);
+			}
 		}
 
 		const added = current.valid.filter(target => !previous.valid.includes(target));
@@ -142,7 +140,7 @@ export default class CompassSyncPlugin extends Plugin {
 		const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
 
 		if (!(targetFile instanceof TFile)) {
-			if (action === "add") {
+			if (action === "add" && this.settings.notifications.ghostLinkWarning) {
 				new Notice(`Relation Sync: Note "${targetName}" does not exist yet.`);
 			}
 			return;
@@ -192,7 +190,7 @@ export default class CompassSyncPlugin extends Plugin {
 				}
 			});
 
-			if (didChange) {
+			if (didChange && this.settings.notifications.backgroundSync) {
 				new Notice(`Relation Sync: Updated background note "${targetFile.basename}"`);
 			}
 		} catch (error) {
@@ -205,6 +203,8 @@ export default class CompassSyncPlugin extends Plugin {
 	// --- GHOST LINK RESOLUTION ---
 
 	async handleNewFileCreated(newFile: TFile) {
+		if (!this.settings.notifications.ghostLinkPrompt) return;
+
 		const pendingSyncs: { sourceFile: TFile; inverseKey: string }[] = [];
 
 		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
@@ -232,18 +232,22 @@ export default class CompassSyncPlugin extends Plugin {
 			const notice = new Notice("", 0);
 			notice.noticeEl.empty();
 
-			// 1. Put the text in its own block with a bottom margin
 			notice.noticeEl.createDiv({
 				text: `Relation Sync: "${newFile.basename}" has ${pendingSyncs.length} pending backlink(s).`,
 				attr: { style: "margin-bottom: 12px;" }
 			});
 
-			// 2. Create a Flexbox container to align buttons to the right
 			const btnContainer = notice.noticeEl.createDiv({
 				attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" }
 			});
 
-			// 3. Create the "Ignore" button (Secondary Action)
+			// Append "Sync Now" first so it stays on the left
+			const syncBtn = btnContainer.createEl("button", {
+				text: "Sync Now",
+				cls: "mod-cta"
+			});
+
+			// Append "Ignore" second so it is pushed to the right
 			const ignoreBtn = btnContainer.createEl("button", {
 				text: "Ignore"
 			});
@@ -252,16 +256,10 @@ export default class CompassSyncPlugin extends Plugin {
 				notice.hide();
 			};
 
-			// 4. Create the "Sync Now" button (Primary Action)
-			const syncBtn = btnContainer.createEl("button", {
-				text: "Sync Now",
-				cls: "mod-cta" // Keeps the purple/accent color
-			});
-
 			syncBtn.onclick = async () => {
 				syncBtn.innerText = "Syncing...";
 				syncBtn.disabled = true;
-				ignoreBtn.disabled = true; // Disable both buttons during sync
+				ignoreBtn.disabled = true;
 
 				for (const sync of pendingSyncs) {
 					await this.modifyTargetNote(
@@ -274,7 +272,10 @@ export default class CompassSyncPlugin extends Plugin {
 				}
 
 				notice.hide();
-				new Notice(`Successfully synced ${pendingSyncs.length} relation(s) to "${newFile.basename}"!`);
+
+				if (this.settings.notifications.backgroundSync) {
+					new Notice(`Successfully synced ${pendingSyncs.length} relation(s) to "${newFile.basename}"!`);
+				}
 			};
 		}
 	}
@@ -299,7 +300,10 @@ export default class CompassSyncPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const loadedData = await this.loadData();
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+		// Deep merge to ensure the nested notifications object isn't overwritten by older versions
+		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 	}
 
 	async saveSettings() {
