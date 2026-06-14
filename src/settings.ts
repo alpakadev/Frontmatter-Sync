@@ -1,5 +1,90 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, AbstractInputSuggest } from "obsidian";
 import type CompassSyncPlugin from "./main";
+
+// --- NATIVE OBSIDIAN SUGGESTION MENU ---
+class PropertySuggest extends AbstractInputSuggest<string> {
+	private showAll = false;
+	private lastInput = "";
+
+	constructor(
+		app: App,
+		private inputEl: HTMLInputElement,
+		private keys: string[],
+		private nextInputEl?: HTMLInputElement
+	) {
+		super(app, inputEl);
+
+		// Handle regular Enter presses when menu is closed or no selection made
+		inputEl.addEventListener("keydown", (e: KeyboardEvent) => {
+			if (e.key === "Enter" && !e.defaultPrevented) {
+				e.preventDefault();
+				this.jumpToNext();
+			}
+		});
+	}
+
+	private jumpToNext() {
+		if (this.nextInputEl) {
+			window.setTimeout(() => {
+				this.nextInputEl!.focus();
+			}, 10);
+		}
+	}
+
+	getSuggestions(inputStr: string): string[] {
+		// Reset the "show all" flag if the user continues typing
+		if (this.lastInput !== inputStr) {
+			this.showAll = false;
+			this.lastInput = inputStr;
+		}
+
+		const query = inputStr.toLowerCase();
+		const filtered = this.keys.filter(k => k.toLowerCase().includes(query));
+
+		if (this.showAll) {
+			return filtered;
+		}
+
+		// Cap at 20 and append the "..." expansion button
+		if (filtered.length > 20) {
+			return [...filtered.slice(0, 20), "__MORE__"];
+		}
+
+		return filtered;
+	}
+
+	renderSuggestion(item: string, el: HTMLElement): void {
+		if (item === "__MORE__") {
+			el.setText("...");
+			el.style.textAlign = "center";
+			el.style.opacity = "0.6";
+			el.style.fontStyle = "italic";
+		} else {
+			el.setText(item);
+		}
+	}
+
+	selectSuggestion(item: string, evt: MouseEvent | KeyboardEvent): void {
+		if (item === "__MORE__") {
+			this.showAll = true;
+			// Wait for internal close logic to finish, then reopen with all items
+			window.setTimeout(() => {
+				this.inputEl.focus();
+				this.inputEl.dispatchEvent(new Event('input'));
+			}, 10);
+			return;
+		}
+
+		// Apply the selected suggestion
+		this.inputEl.value = item;
+		this.inputEl.dispatchEvent(new Event('input'));
+		this.close();
+
+		// Automatically focus the inverse property box!
+		this.jumpToNext();
+	}
+}
+
 
 export class CompassSettingTab extends PluginSettingTab {
 	plugin: CompassSyncPlugin;
@@ -62,6 +147,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				})
 			);
 
+
 		// --- RELATIONS SECTION ---
 		containerEl.createEl("h3", { text: "Relation Pairs" });
 
@@ -79,31 +165,22 @@ export class CompassSettingTab extends PluginSettingTab {
 					})
 			);
 
-		// --- DATALIST FOR PROPERTY SUGGESTIONS ---
-		const datalistId = "compass-property-keys";
-		const datalist = containerEl.createEl("datalist");
-		datalist.id = datalistId;
-
-		const keys = new Set<string>();
-
-		// Use Obsidian's native property keys API if available, otherwise fallback to scanning files
+		// Extract all existing property keys from the vault for suggestions
+		const rawKeys = new Set<string>();
 		if (typeof (this.app.metadataCache as any).getAllPropertyKeys === "function") {
 			const props = (this.app.metadataCache as any).getAllPropertyKeys();
-			props.forEach((p: string) => keys.add(p));
+			props.forEach((p: string) => rawKeys.add(p));
 		} else {
 			for (const file of this.app.vault.getMarkdownFiles()) {
 				const cache = this.app.metadataCache.getFileCache(file);
 				if (cache?.frontmatter) {
-					Object.keys(cache.frontmatter).forEach(k => keys.add(k));
+					Object.keys(cache.frontmatter).forEach(k => rawKeys.add(k));
 				}
 			}
 		}
+		const keysArray = Array.from(rawKeys).sort();
 
-		keys.forEach(key => {
-			datalist.createEl("option", { value: key });
-		});
-
-		// --- RENDER RELATION PAIRS ---
+		// Draw existing relation pairs
 		this.plugin.settings.relations.forEach((pair, index) => {
 			let forwardInput: HTMLInputElement | null = null;
 			let inverseInput: HTMLInputElement | null = null;
@@ -113,9 +190,8 @@ export class CompassSettingTab extends PluginSettingTab {
 
 				.addText((text) => {
 					forwardInput = text.inputEl;
-					forwardInput.setAttribute("list", datalistId); // Attach auto-complete
-
-					text.setPlaceholder("e.g., south")
+					text
+						.setPlaceholder("e.g., south")
 						.setValue(pair.forward)
 						.onChange(async (value) => {
 							pair.forward = value;
@@ -125,9 +201,8 @@ export class CompassSettingTab extends PluginSettingTab {
 
 				.addText((text) => {
 					inverseInput = text.inputEl;
-					inverseInput.setAttribute("list", datalistId); // Attach auto-complete
-
-					text.setPlaceholder("e.g., north")
+					text
+						.setPlaceholder("e.g., north")
 						.setValue(pair.inverse)
 						.onChange(async (value) => {
 							pair.inverse = value;
@@ -146,14 +221,10 @@ export class CompassSettingTab extends PluginSettingTab {
 						})
 				);
 
-			// Add "Enter" key navigation from Forward to Inverse input
+			// Attach the native Obsidian Suggestion Menus to the rendered inputs
 			if (forwardInput && inverseInput) {
-				forwardInput.addEventListener("keydown", (e: KeyboardEvent) => {
-					if (e.key === "Enter") {
-						e.preventDefault();
-						inverseInput!.focus();
-					}
-				});
+				new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
+				new PropertySuggest(this.app, inverseInput, keysArray); // No next input to jump to
 			}
 		});
 	}
