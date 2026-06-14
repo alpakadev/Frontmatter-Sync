@@ -18,7 +18,6 @@ export interface CompassSyncSettings {
     notifications: NotificationSettings;
 }
 
-// Data structure to pass preview information to the UI Modal
 export interface PendingSync {
     sourceName: string;
     sourceFile: TFile;

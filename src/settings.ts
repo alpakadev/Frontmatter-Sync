@@ -76,8 +76,14 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 
 // --- BULK SYNC MODAL ---
 class BulkSyncModal extends Modal {
+	private selected: Set<PendingSync>;
+	private viewMode: "file" | "folder" = "folder";
+	private listContainer!: HTMLElement;
+	private applyBtn!: HTMLButtonElement;
+
 	constructor(app: App, private plugin: CompassSyncPlugin, private pending: PendingSync[]) {
 		super(app);
+		this.selected = new Set(this.pending); // Default select all
 	}
 
 	onOpen() {
@@ -91,34 +97,147 @@ class BulkSyncModal extends Modal {
 			return;
 		}
 
-		contentEl.createEl("p", { text: `Found ${this.pending.length} missing bidirectional link(s). Applying changes will automatically write the following properties:` });
-
-		// Scrollable list container
-		const listContainer = contentEl.createDiv({
-			attr: { style: "max-height: 300px; overflow-y: auto; margin-bottom: 20px; border: 1px solid var(--background-modifier-border); padding: 10px; border-radius: 5px; background: var(--background-secondary);" }
+		contentEl.createEl("p", {
+			text: `Found ${this.pending.length} missing bidirectional link(s). Select the ones you want to apply.`,
+			cls: "setting-item-description"
 		});
 
-		for (const p of this.pending) {
-			listContainer.createDiv({
-				text: `📝 Add "${p.inverseKey}: [[${p.sourceName}]]" to note "${p.targetFile.basename}"`,
-				attr: { style: "margin-bottom: 6px; font-size: 0.9em; font-family: var(--font-monospace);" }
-			});
-		}
+		// --- TOOLBAR ---
+		const toolbar = contentEl.createDiv({ attr: { style: "display: flex; gap: 8px; margin-bottom: 12px; align-items: center;" } });
 
-		new Setting(contentEl)
+		toolbar.createEl("button", { text: "Select All" }).onclick = () => {
+			this.pending.forEach(p => this.selected.add(p));
+			this.renderList();
+		};
+
+		toolbar.createEl("button", { text: "Unselect All" }).onclick = () => {
+			this.selected.clear();
+			this.renderList();
+		};
+
+		const viewToggleBtn = toolbar.createEl("button", { text: "View: Folders" });
+		viewToggleBtn.onclick = () => {
+			this.viewMode = this.viewMode === "folder" ? "file" : "folder";
+			viewToggleBtn.innerText = this.viewMode === "folder" ? "View: Folders" : "View: Files";
+			this.renderList();
+		};
+
+		// --- LIST CONTAINER ---
+		this.listContainer = contentEl.createDiv({
+			attr: { style: "max-height: 400px; overflow-y: auto; margin-bottom: 20px; border: 1px solid var(--background-modifier-border); padding: 10px; border-radius: 5px; background: var(--background-secondary);" }
+		});
+
+		// --- ACTION FOOTER ---
+		const footer = new Setting(contentEl)
 			.addButton((btn) => btn
 				.setButtonText("Close")
 				.onClick(() => this.close())
 			)
-			.addButton((btn) => btn
-				.setButtonText("Apply Changes")
-				.setCta()
-				.onClick(async () => {
-					btn.setButtonText("Applying...").setDisabled(true);
-					await this.plugin.executeBulkSync(this.pending);
-					this.close();
-				})
-			);
+			.addButton((btn) => {
+				this.applyBtn = btn.buttonEl;
+				btn.setButtonText(`Apply ${this.selected.size} Changes`)
+					.setCta()
+					.onClick(async () => {
+						btn.setButtonText("Applying...").setDisabled(true);
+						await this.plugin.executeBulkSync(Array.from(this.selected));
+						this.close();
+					});
+			});
+
+		// Initial Render
+		this.renderList();
+	}
+
+	private renderList() {
+		this.listContainer.empty();
+
+		if (this.viewMode === "folder") {
+			// GROUP BY FOLDER -> THEN BY FILE
+			const folders = new Map<string, PendingSync[]>();
+			this.pending.forEach(p => {
+				const f = p.targetFile.parent?.path || "/ (Root)";
+				if (!folders.has(f)) folders.set(f, []);
+				folders.get(f)!.push(p);
+			});
+
+			Array.from(folders.keys()).sort().forEach(folder => {
+				const syncs = folders.get(folder)!;
+				this.renderGroupHeader(this.listContainer, `📁 ${folder}`, syncs);
+
+				const folderIndent = this.listContainer.createDiv({ attr: { style: "margin-left: 20px; margin-bottom: 12px; border-left: 1px solid var(--background-modifier-border); padding-left: 10px;" } });
+
+				const files = new Map<string, PendingSync[]>();
+				syncs.forEach(p => {
+					const f = p.targetFile.basename;
+					if (!files.has(f)) files.set(f, []);
+					files.get(f)!.push(p);
+				});
+
+				Array.from(files.keys()).sort().forEach(file => {
+					const fileSyncs = files.get(file)!;
+					this.renderGroupHeader(folderIndent, `📄 ${file}`, fileSyncs);
+					const fileIndent = folderIndent.createDiv({ attr: { style: "margin-left: 20px; margin-bottom: 8px;" } });
+					fileSyncs.forEach(p => this.renderSingleItem(fileIndent, p));
+				});
+			});
+
+		} else {
+			// GROUP BY FILE ONLY
+			const files = new Map<string, PendingSync[]>();
+			this.pending.forEach(p => {
+				const f = p.targetFile.path; // Use full path to differentiate same-named files
+				if (!files.has(f)) files.set(f, []);
+				files.get(f)!.push(p);
+			});
+
+			Array.from(files.keys()).sort().forEach(file => {
+				const syncs = files.get(file)!;
+				this.renderGroupHeader(this.listContainer, `📄 ${file}`, syncs);
+				const indent = this.listContainer.createDiv({ attr: { style: "margin-left: 20px; margin-bottom: 12px;" } });
+				syncs.forEach(p => this.renderSingleItem(indent, p));
+			});
+		}
+
+		// Update Button State
+		if (this.applyBtn) {
+			this.applyBtn.innerText = `Apply ${this.selected.size} Changes`;
+			this.applyBtn.disabled = this.selected.size === 0;
+		}
+	}
+
+	private renderGroupHeader(container: HTMLElement, label: string, syncs: PendingSync[]) {
+		const header = container.createDiv({ attr: { style: "display: flex; align-items: center; margin-bottom: 4px; padding: 4px 0;" } });
+
+		const cb = header.createEl("input", { type: "checkbox", attr: { style: "margin-right: 8px; cursor: pointer;" } });
+
+		const selectedCount = syncs.filter(s => this.selected.has(s)).length;
+		cb.checked = selectedCount === syncs.length && syncs.length > 0;
+		cb.indeterminate = selectedCount > 0 && selectedCount < syncs.length;
+
+		cb.onchange = (e) => {
+			const checked = (e.target as HTMLInputElement).checked;
+			syncs.forEach(s => checked ? this.selected.add(s) : this.selected.delete(s));
+			this.renderList(); // Re-render to cascade visually
+		};
+
+		header.createSpan({ text: label, attr: { style: "font-weight: 600; cursor: pointer;" } }).onclick = () => cb.click();
+	}
+
+	private renderSingleItem(container: HTMLElement, sync: PendingSync) {
+		const item = container.createDiv({ attr: { style: "display: flex; align-items: flex-start; margin-bottom: 4px; padding: 2px 0;" } });
+
+		const cb = item.createEl("input", { type: "checkbox", attr: { style: "margin-right: 8px; margin-top: 3px; cursor: pointer;" } });
+		cb.checked = this.selected.has(sync);
+
+		cb.onchange = (e) => {
+			const checked = (e.target as HTMLInputElement).checked;
+			checked ? this.selected.add(sync) : this.selected.delete(sync);
+			this.renderList(); // Re-render to update parent headers
+		};
+
+		const textSpan = item.createSpan({ attr: { style: "font-size: 0.9em; font-family: var(--font-monospace); color: var(--text-muted); cursor: pointer;" } });
+		textSpan.innerHTML = `Add <span style="color: var(--text-normal)">${sync.inverseKey}: [[${sync.sourceName}]]</span>`;
+		textSpan.onclick = () => cb.click();
 	}
 
 	onClose() {
@@ -149,7 +268,7 @@ export class CompassSettingTab extends PluginSettingTab {
 			.setDesc("Scan the entire vault for missing bidirectional links and add them automatically. A preview will be shown before changes are applied.")
 			.addButton((btn) => btn
 				.setButtonText("Run Scan")
-				.setWarning() // This natively makes the button red in Obsidian
+				.setWarning()
 				.onClick(async () => {
 					btn.setButtonText("Scanning...").setDisabled(true);
 					const pending = await this.plugin.previewBulkSync();

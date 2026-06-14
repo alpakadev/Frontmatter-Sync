@@ -87,7 +87,6 @@ export default class CompassSyncPlugin extends Plugin {
 						const targetFm = this.prevFm.get(targetFile.path) || {};
 						const inverseLinks = this.extractLinks(targetFm[pair.inverse]);
 
-						// If target does not point back, flag it
 						if (!inverseLinks.valid.includes(sourceFile.basename)) {
 							pending.push({
 								sourceName: sourceFile.basename,
@@ -108,7 +107,6 @@ export default class CompassSyncPlugin extends Plugin {
 							const targetFm = this.prevFm.get(targetFile.path) || {};
 							const forwardLinks = this.extractLinks(targetFm[pair.forward]);
 
-							// If target does not point back, flag it
 							if (!forwardLinks.valid.includes(sourceFile.basename)) {
 								pending.push({
 									sourceName: sourceFile.basename,
