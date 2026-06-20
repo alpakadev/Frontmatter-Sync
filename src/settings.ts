@@ -242,6 +242,10 @@ class BulkSyncModal extends Modal {
 export class CompassSettingTab extends PluginSettingTab {
 	plugin: CompassSyncPlugin;
 
+	// Drag state tracking for accurate UX feedback
+	private draggedGroupIndex: number | null = null;
+	private draggedPairData: { groupIndex: number, pairIndex: number } | null = null;
+
 	constructor(app: App, plugin: CompassSyncPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
@@ -357,7 +361,49 @@ export class CompassSettingTab extends PluginSettingTab {
 
 		this.plugin.settings.relationGroups.forEach((group, groupIndex) => {
 			const groupContainer = listContainer.createDiv({
-				attr: { style: "border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 16px; background: var(--background-secondary);" }
+				attr: { style: "border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 16px; background: var(--background-secondary); transition: border 0.2s ease;" }
+			});
+
+			// --- GROUP DRAG OVER UX FIX ---
+			groupContainer.addEventListener("dragover", (e) => {
+				e.preventDefault();
+				if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+
+				// Highlight top border heavily if reordering folders
+				if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
+					groupContainer.style.borderTop = "3px solid var(--interactive-accent)";
+				}
+				// Highlight entire box slightly if dropping a pair into this folder
+				else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
+					groupContainer.style.border = "1px dashed var(--interactive-accent)";
+				}
+			});
+
+			groupContainer.addEventListener("dragleave", () => {
+				groupContainer.style.border = "1px solid var(--background-modifier-border)";
+			});
+
+			groupContainer.addEventListener("drop", async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				groupContainer.style.border = "1px solid var(--background-modifier-border)";
+
+				// Reorder Groups
+				if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
+					const movedGroup = this.plugin.settings.relationGroups.splice(this.draggedGroupIndex, 1)[0];
+					this.plugin.settings.relationGroups.splice(groupIndex, 0, movedGroup);
+					this.draggedGroupIndex = null;
+					await this.plugin.saveSettings();
+					this.display();
+				}
+				// Append Pair to this Group
+				else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
+					const movedPair = this.plugin.settings.relationGroups[this.draggedPairData.groupIndex].pairs.splice(this.draggedPairData.pairIndex, 1)[0];
+					this.plugin.settings.relationGroups[groupIndex].pairs.push(movedPair);
+					this.draggedPairData = null;
+					await this.plugin.saveSettings();
+					this.display();
+				}
 			});
 
 			// --- CUSTOM ALIGNED FOLDER HEADER ---
@@ -367,13 +413,35 @@ export class CompassSettingTab extends PluginSettingTab {
 			headerSetting.settingEl.style.marginBottom = "12px";
 			headerSetting.settingEl.style.flexWrap = "wrap";
 
-			// Setup left side for Name and Collapse Icon
 			headerSetting.infoEl.style.display = "flex";
 			headerSetting.infoEl.style.alignItems = "center";
 			headerSetting.infoEl.style.gap = "8px";
 			headerSetting.infoEl.style.flex = "1";
 			headerSetting.infoEl.style.minWidth = "200px";
 
+			// Group Drag Handle
+			const dragHandle = headerSetting.infoEl.createDiv({
+				attr: { style: "cursor: grab; opacity: 0.5; padding: 4px; display: flex; align-items: center;" }
+			});
+			setIcon(dragHandle, "grip-vertical");
+			dragHandle.draggable = true;
+
+			dragHandle.addEventListener("dragstart", (e) => {
+				this.draggedGroupIndex = groupIndex;
+				if (e.dataTransfer) {
+					e.dataTransfer.setData("text/plain", "group");
+					e.dataTransfer.effectAllowed = "move";
+				}
+				groupContainer.style.opacity = "0.5";
+			});
+
+			dragHandle.addEventListener("dragend", () => {
+				this.draggedGroupIndex = null;
+				groupContainer.style.opacity = "1";
+				groupContainer.style.border = "1px solid var(--background-modifier-border)";
+			});
+
+			// Collapse Button
 			const collapseBtn = headerSetting.infoEl.createDiv({
 				attr: { style: "cursor: pointer; display: flex; align-items: center; opacity: 0.7; padding: 4px; border-radius: 4px;" }
 			});
@@ -386,22 +454,61 @@ export class CompassSettingTab extends PluginSettingTab {
 				this.display();
 			};
 
-			const titleInput = new TextComponent(headerSetting.infoEl)
-				.setValue(group.name)
-				.setPlaceholder("Folder Name")
-				.onChange(async (val) => {
-					group.name = val;
-					await this.plugin.saveSettings();
-				});
-			titleInput.inputEl.style.fontWeight = "bold";
-			titleInput.inputEl.style.fontSize = "1.1em";
-			titleInput.inputEl.style.border = "none";
-			titleInput.inputEl.style.boxShadow = "none";
-			titleInput.inputEl.style.background = "transparent";
-			titleInput.inputEl.style.padding = "4px 8px";
-			titleInput.inputEl.style.flex = "1";
+			// Inline Edit Title UI + UX UX Fix for Pencil Icon
+			const titleContainer = headerSetting.infoEl.createDiv({ attr: { style: "display: flex; flex: 1; align-items: center; min-width: 0;" } });
 
-			// Setup right side for actions
+			const titleSpan = titleContainer.createSpan({
+				text: group.name,
+				attr: { style: "font-weight: bold; font-size: 1.1em; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" }
+			});
+			titleSpan.title = "Double-click to edit";
+
+			const titleInput = titleContainer.createEl("input", {
+				type: "text",
+				value: group.name,
+				attr: { style: "display: none; flex: 1; min-width: 50px; font-weight: bold; font-size: 1.1em; padding: 2px 6px;" }
+			});
+
+			// NEW: Pencil icon right beside the text instead of far right
+			const editPencil = titleContainer.createDiv({
+				attr: { style: "cursor: pointer; opacity: 0.4; margin-left: 8px; display: flex; align-items: center;" }
+			});
+			setIcon(editPencil, "pencil");
+			editPencil.addEventListener("mouseover", () => editPencil.style.opacity = "0.9");
+			editPencil.addEventListener("mouseout", () => editPencil.style.opacity = "0.4");
+
+			const toggleEdit = () => {
+				if (titleInput.style.display === "block") return;
+				titleSpan.style.display = "none";
+				editPencil.style.display = "none"; // Hide pencil while editing
+				titleInput.style.display = "block";
+				titleInput.focus();
+				titleInput.select();
+			};
+
+			const saveEdit = async () => {
+				if (titleInput.style.display === "none") return;
+				const newVal = titleInput.value.trim() || "Unnamed Group";
+				group.name = newVal;
+				titleSpan.innerText = newVal;
+				titleInput.style.display = "none";
+				titleSpan.style.display = "block";
+				editPencil.style.display = "flex"; // Restore pencil
+				await this.plugin.saveSettings();
+			};
+
+			titleSpan.addEventListener("dblclick", toggleEdit);
+			editPencil.addEventListener("click", toggleEdit);
+			titleInput.addEventListener("blur", saveEdit);
+			titleInput.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") saveEdit();
+				if (e.key === "Escape") {
+					titleInput.value = group.name;
+					saveEdit();
+				}
+			});
+
+			// Header Right Side Actions (Pencil removed from here)
 			headerSetting
 				.addExtraButton(btn => btn
 					.setIcon(group.enabled ? "eye" : "eye-off")
@@ -417,7 +524,7 @@ export class CompassSettingTab extends PluginSettingTab {
 					.setTooltip("Add relation pair to folder")
 					.onClick(async () => {
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
-						group.isCollapsed = false; // Auto-expand when adding new pairs
+						group.isCollapsed = false;
 						await this.plugin.saveSettings();
 						this.display();
 					})
@@ -435,11 +542,7 @@ export class CompassSettingTab extends PluginSettingTab {
 			// --- PAIRS CONTAINER ---
 			const pairsContainer = groupContainer.createDiv();
 
-			// Handle visual states
-			if (group.isCollapsed) {
-				pairsContainer.style.display = "none";
-			}
-
+			if (group.isCollapsed) pairsContainer.style.display = "none";
 			if (!group.enabled) {
 				pairsContainer.style.opacity = "0.5";
 				pairsContainer.style.pointerEvents = "none";
@@ -494,21 +597,34 @@ export class CompassSettingTab extends PluginSettingTab {
 							})
 					);
 
-				// Responsive and Flex adjustments for pairs
+				// --- UX FIX: Reclaiming empty space from native flexbox ---
 				const el = pairSetting.settingEl;
 				el.style.borderTop = "none";
 				el.style.padding = "6px 0";
-				el.style.flexWrap = "wrap";
+				el.style.flexWrap = "nowrap";
 				el.style.gap = "8px";
 
-				// Stretch inputs to fill void
+				// Destroy the empty left container Obsidian makes by default
+				const infoBox = el.querySelector('.setting-item-info') as HTMLElement;
+				if (infoBox) infoBox.style.display = "none";
+
+				// Stretch the right container across the entire 100% width
+				const controlBox = el.querySelector('.setting-item-control') as HTMLElement;
+				if (controlBox) {
+					controlBox.style.justifyContent = "flex-start";
+					controlBox.style.width = "100%";
+					controlBox.style.flex = "1";
+				}
+
 				if (forwardInput) {
-					forwardInput.style.flex = "1 1 120px";
-					forwardInput.style.width = "auto";
+					forwardInput.style.flex = "1 1 50px";
+					forwardInput.style.minWidth = "0";
+					forwardInput.style.width = "100%";
 				}
 				if (inverseInput) {
-					inverseInput.style.flex = "1 1 120px";
-					inverseInput.style.width = "auto";
+					inverseInput.style.flex = "1 1 50px";
+					inverseInput.style.minWidth = "0";
+					inverseInput.style.width = "100%";
 				}
 
 				if (!pair.enabled) {
@@ -516,24 +632,32 @@ export class CompassSettingTab extends PluginSettingTab {
 					el.style.filter = "grayscale(100%)";
 				}
 
+				// --- PAIR DRAG AND DROP ---
 				el.draggable = true;
 				el.style.cursor = "grab";
 
 				el.addEventListener("dragstart", (e) => {
+					e.stopPropagation();
+					this.draggedPairData = { groupIndex, pairIndex };
 					if (e.dataTransfer) {
-						e.dataTransfer.setData("text/plain", JSON.stringify({ groupIndex, pairIndex }));
+						e.dataTransfer.setData("text/plain", "pair");
 						e.dataTransfer.effectAllowed = "move";
-						el.style.opacity = "0.3";
 					}
+					el.style.opacity = "0.3";
 				});
 
 				el.addEventListener("dragend", () => {
+					this.draggedPairData = null;
 					el.style.opacity = pair.enabled ? "1" : "0.4";
 					el.style.borderTop = "";
 				});
 
 				el.addEventListener("dragover", (e) => {
+					// Ignore folder drags completely
+					if (this.draggedGroupIndex !== null) return;
+
 					e.preventDefault();
+					e.stopPropagation();
 					if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
 					el.style.borderTop = "2px solid var(--interactive-accent)";
 				});
@@ -543,24 +667,21 @@ export class CompassSettingTab extends PluginSettingTab {
 				});
 
 				el.addEventListener("drop", async (e) => {
+					if (this.draggedGroupIndex !== null) return;
+
 					e.preventDefault();
+					e.stopPropagation();
 					el.style.borderTop = "";
 
-					if (!e.dataTransfer) return;
-					try {
-						const data = JSON.parse(e.dataTransfer.getData("text/plain"));
-						const fromGroup = data.groupIndex;
-						const fromPair = data.pairIndex;
+					if (this.draggedPairData !== null) {
+						const fromGroup = this.draggedPairData.groupIndex;
+						const fromPair = this.draggedPairData.pairIndex;
 
-						if (fromGroup !== undefined && fromPair !== undefined) {
-							const movedItem = this.plugin.settings.relationGroups[fromGroup].pairs.splice(fromPair, 1)[0];
-							this.plugin.settings.relationGroups[groupIndex].pairs.splice(pairIndex, 0, movedItem);
-
-							await this.plugin.saveSettings();
-							this.display();
-						}
-					} catch (err) {
-						// Ignore invalid drag drops
+						const movedItem = this.plugin.settings.relationGroups[fromGroup].pairs.splice(fromPair, 1)[0];
+						this.plugin.settings.relationGroups[groupIndex].pairs.splice(pairIndex, 0, movedItem);
+						this.draggedPairData = null;
+						await this.plugin.saveSettings();
+						this.display();
 					}
 				});
 
