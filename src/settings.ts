@@ -74,6 +74,42 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 	}
 }
 
+// --- CONFIRM DELETE MODAL ---
+class ConfirmDeleteModal extends Modal {
+	constructor(app: App, private groupName: string, private onConfirm: () => void) {
+		super(app);
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl("h2", { text: "Delete Folder" });
+		contentEl.createEl("p", {
+			text: `Are you sure you want to delete the folder "${this.groupName}" and all its pairs? This action cannot be undone.`,
+			cls: "setting-item-description"
+		});
+
+		new Setting(contentEl)
+			.addButton(btn => btn
+				.setButtonText("Cancel")
+				.onClick(() => this.close())
+			)
+			.addButton(btn => btn
+				.setButtonText("Delete")
+				.setWarning()
+				.onClick(() => {
+					this.onConfirm();
+					this.close();
+				})
+			);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
 // --- BULK SYNC MODAL ---
 class BulkSyncModal extends Modal {
 	private selected: Set<PendingSync>;
@@ -242,7 +278,6 @@ class BulkSyncModal extends Modal {
 export class CompassSettingTab extends PluginSettingTab {
 	plugin: CompassSyncPlugin;
 
-	// Drag state tracking for accurate UX feedback
 	private draggedGroupIndex: number | null = null;
 	private draggedPairData: { groupIndex: number, pairIndex: number } | null = null;
 
@@ -251,12 +286,9 @@ export class CompassSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	// --- UX FIX: Prevent Scroll Jumping ---
 	private refresh(): void {
-		// Capture the exact scroll position before wiping the DOM
 		const scrollTop = this.containerEl.scrollTop;
 		this.display();
-		// Instantly restore it after the DOM is rebuilt
 		this.containerEl.scrollTop = scrollTop;
 	}
 
@@ -339,7 +371,7 @@ export class CompassSettingTab extends PluginSettingTab {
 		addGroupBtn.onclick = async () => {
 			this.plugin.settings.relationGroups.push({ name: "New Group", enabled: true, isCollapsed: false, pairs: [] });
 			await this.plugin.saveSettings();
-			this.refresh(); // Used refresh() to prevent jumping
+			this.refresh();
 		};
 
 		const hasEnabledItems = this.plugin.settings.relationGroups.some(g =>
@@ -356,7 +388,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				g.pairs.forEach(p => p.enabled = newState);
 			});
 			await this.plugin.saveSettings();
-			this.refresh(); // Used refresh() to prevent jumping
+			this.refresh();
 		};
 
 		const rawKeys = new Set<string>();
@@ -406,14 +438,14 @@ export class CompassSettingTab extends PluginSettingTab {
 					this.plugin.settings.relationGroups.splice(groupIndex, 0, movedGroup);
 					this.draggedGroupIndex = null;
 					await this.plugin.saveSettings();
-					this.refresh(); // Used refresh()
+					this.refresh();
 				}
 				else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
 					const movedPair = this.plugin.settings.relationGroups[this.draggedPairData.groupIndex].pairs.splice(this.draggedPairData.pairIndex, 1)[0];
 					this.plugin.settings.relationGroups[groupIndex].pairs.push(movedPair);
 					this.draggedPairData = null;
 					await this.plugin.saveSettings();
-					this.refresh(); // Used refresh()
+					this.refresh();
 				}
 			});
 
@@ -459,7 +491,7 @@ export class CompassSettingTab extends PluginSettingTab {
 			collapseBtn.onclick = async () => {
 				group.isCollapsed = !group.isCollapsed;
 				await this.plugin.saveSettings();
-				this.refresh(); // Used refresh()
+				this.refresh();
 			};
 
 			const titleContainer = headerSetting.infoEl.createDiv({ attr: { style: "display: flex; flex: 1; align-items: center; min-width: 0;" } });
@@ -523,7 +555,7 @@ export class CompassSettingTab extends PluginSettingTab {
 						group.enabled = newState;
 						group.pairs.forEach(p => p.enabled = newState);
 						await this.plugin.saveSettings();
-						this.refresh(); // Used refresh()
+						this.refresh();
 					})
 				)
 				.addExtraButton(btn => btn
@@ -533,18 +565,19 @@ export class CompassSettingTab extends PluginSettingTab {
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
 						group.isCollapsed = false;
 						await this.plugin.saveSettings();
-						this.refresh(); // Used refresh()
+						this.refresh();
 					})
 				)
 				.addExtraButton(btn => btn
 					.setIcon("trash")
 					.setTooltip("Delete entire folder")
-					.onClick(async () => {
-						if (window.confirm(`Are you sure you want to delete the folder "${group.name}" and all its pairs?`)) {
+					.onClick(() => {
+						// Open native Obsidian confirmation modal instead of window.confirm
+						new ConfirmDeleteModal(this.app, group.name, async () => {
 							this.plugin.settings.relationGroups.splice(groupIndex, 1);
 							await this.plugin.saveSettings();
-							this.refresh(); // Used refresh()
-						}
+							this.refresh();
+						}).open();
 					})
 				);
 
@@ -573,7 +606,7 @@ export class CompassSettingTab extends PluginSettingTab {
 						.onClick(async () => {
 							pair.enabled = !pair.enabled;
 							await this.plugin.saveSettings();
-							this.refresh(); // Used refresh()
+							this.refresh();
 						})
 					)
 					.addText((text) => {
@@ -603,7 +636,7 @@ export class CompassSettingTab extends PluginSettingTab {
 							.onClick(async () => {
 								group.pairs.splice(pairIndex, 1);
 								await this.plugin.saveSettings();
-								this.refresh(); // Used refresh()
+								this.refresh();
 							})
 					);
 
@@ -686,7 +719,7 @@ export class CompassSettingTab extends PluginSettingTab {
 						this.plugin.settings.relationGroups[groupIndex].pairs.splice(pairIndex, 0, movedItem);
 						this.draggedPairData = null;
 						await this.plugin.saveSettings();
-						this.refresh(); // Used refresh()
+						this.refresh();
 					}
 				});
 
