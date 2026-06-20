@@ -333,11 +333,19 @@ export class CompassSettingTab extends PluginSettingTab {
 			this.display();
 		};
 
-		const deactivateAllBtn = topActions.createEl("button", { text: "Deactivate All" });
-		deactivateAllBtn.onclick = async () => {
+		// --- UX FIX: Dynamic Toggle All Button ---
+		const hasEnabledItems = this.plugin.settings.relationGroups.some(g =>
+			g.enabled || g.pairs.some(p => p.enabled)
+		);
+		const toggleAllBtn = topActions.createEl("button", {
+			text: hasEnabledItems ? "Deactivate All" : "Activate All"
+		});
+
+		toggleAllBtn.onclick = async () => {
+			const newState = !hasEnabledItems;
 			this.plugin.settings.relationGroups.forEach(g => {
-				g.enabled = false;
-				g.pairs.forEach(p => p.enabled = false);
+				g.enabled = newState;
+				g.pairs.forEach(p => p.enabled = newState);
 			});
 			await this.plugin.saveSettings();
 			this.display();
@@ -369,11 +377,9 @@ export class CompassSettingTab extends PluginSettingTab {
 				e.preventDefault();
 				if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
 
-				// Highlight top border heavily if reordering folders
 				if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
 					groupContainer.style.borderTop = "3px solid var(--interactive-accent)";
 				}
-				// Highlight entire box slightly if dropping a pair into this folder
 				else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
 					groupContainer.style.border = "1px dashed var(--interactive-accent)";
 				}
@@ -388,7 +394,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				e.stopPropagation();
 				groupContainer.style.border = "1px solid var(--background-modifier-border)";
 
-				// Reorder Groups
 				if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
 					const movedGroup = this.plugin.settings.relationGroups.splice(this.draggedGroupIndex, 1)[0];
 					this.plugin.settings.relationGroups.splice(groupIndex, 0, movedGroup);
@@ -396,7 +401,6 @@ export class CompassSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					this.display();
 				}
-				// Append Pair to this Group
 				else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
 					const movedPair = this.plugin.settings.relationGroups[this.draggedPairData.groupIndex].pairs.splice(this.draggedPairData.pairIndex, 1)[0];
 					this.plugin.settings.relationGroups[groupIndex].pairs.push(movedPair);
@@ -454,7 +458,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				this.display();
 			};
 
-			// Inline Edit Title UI + UX UX Fix for Pencil Icon
+			// Inline Edit Title UI 
 			const titleContainer = headerSetting.infoEl.createDiv({ attr: { style: "display: flex; flex: 1; align-items: center; min-width: 0;" } });
 
 			const titleSpan = titleContainer.createSpan({
@@ -469,7 +473,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				attr: { style: "display: none; flex: 1; min-width: 50px; font-weight: bold; font-size: 1.1em; padding: 2px 6px;" }
 			});
 
-			// NEW: Pencil icon right beside the text instead of far right
 			const editPencil = titleContainer.createDiv({
 				attr: { style: "cursor: pointer; opacity: 0.4; margin-left: 8px; display: flex; align-items: center;" }
 			});
@@ -480,7 +483,7 @@ export class CompassSettingTab extends PluginSettingTab {
 			const toggleEdit = () => {
 				if (titleInput.style.display === "block") return;
 				titleSpan.style.display = "none";
-				editPencil.style.display = "none"; // Hide pencil while editing
+				editPencil.style.display = "none";
 				titleInput.style.display = "block";
 				titleInput.focus();
 				titleInput.select();
@@ -493,7 +496,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				titleSpan.innerText = newVal;
 				titleInput.style.display = "none";
 				titleSpan.style.display = "block";
-				editPencil.style.display = "flex"; // Restore pencil
+				editPencil.style.display = "flex";
 				await this.plugin.saveSettings();
 			};
 
@@ -508,13 +511,16 @@ export class CompassSettingTab extends PluginSettingTab {
 				}
 			});
 
-			// Header Right Side Actions (Pencil removed from here)
+			// Header Right Side Actions
 			headerSetting
+				// --- UX FIX: Cascade Folder Toggle to Pairs ---
 				.addExtraButton(btn => btn
 					.setIcon(group.enabled ? "eye" : "eye-off")
-					.setTooltip(group.enabled ? "Disable entire folder" : "Enable folder")
+					.setTooltip(group.enabled ? "Disable folder and all pairs" : "Enable folder and all pairs")
 					.onClick(async () => {
-						group.enabled = !group.enabled;
+						const newState = !group.enabled;
+						group.enabled = newState;
+						group.pairs.forEach(p => p.enabled = newState);
 						await this.plugin.saveSettings();
 						this.display();
 					})
@@ -529,18 +535,24 @@ export class CompassSettingTab extends PluginSettingTab {
 						this.display();
 					})
 				)
+				// --- UX FIX: Delete Confirmation Dialog ---
 				.addExtraButton(btn => btn
 					.setIcon("trash")
 					.setTooltip("Delete entire folder")
 					.onClick(async () => {
-						this.plugin.settings.relationGroups.splice(groupIndex, 1);
-						await this.plugin.saveSettings();
-						this.display();
+						if (window.confirm(`Are you sure you want to delete the folder "${group.name}" and all its pairs?`)) {
+							this.plugin.settings.relationGroups.splice(groupIndex, 1);
+							await this.plugin.saveSettings();
+							this.display();
+						}
 					})
 				);
 
 			// --- PAIRS CONTAINER ---
 			const pairsContainer = groupContainer.createDiv();
+
+			// --- UX FIX: Visual Hierarchy Indentation ---
+			pairsContainer.style.paddingLeft = "38px";
 
 			if (group.isCollapsed) pairsContainer.style.display = "none";
 			if (!group.enabled) {
@@ -597,18 +609,15 @@ export class CompassSettingTab extends PluginSettingTab {
 							})
 					);
 
-				// --- UX FIX: Reclaiming empty space from native flexbox ---
 				const el = pairSetting.settingEl;
 				el.style.borderTop = "none";
 				el.style.padding = "6px 0";
 				el.style.flexWrap = "nowrap";
 				el.style.gap = "8px";
 
-				// Destroy the empty left container Obsidian makes by default
 				const infoBox = el.querySelector('.setting-item-info') as HTMLElement;
 				if (infoBox) infoBox.style.display = "none";
 
-				// Stretch the right container across the entire 100% width
 				const controlBox = el.querySelector('.setting-item-control') as HTMLElement;
 				if (controlBox) {
 					controlBox.style.justifyContent = "flex-start";
@@ -653,7 +662,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				});
 
 				el.addEventListener("dragover", (e) => {
-					// Ignore folder drags completely
 					if (this.draggedGroupIndex !== null) return;
 
 					e.preventDefault();
