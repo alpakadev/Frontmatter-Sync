@@ -251,6 +251,15 @@ export class CompassSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
+	// --- UX FIX: Prevent Scroll Jumping ---
+	private refresh(): void {
+		// Capture the exact scroll position before wiping the DOM
+		const scrollTop = this.containerEl.scrollTop;
+		this.display();
+		// Instantly restore it after the DOM is rebuilt
+		this.containerEl.scrollTop = scrollTop;
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
@@ -330,10 +339,9 @@ export class CompassSettingTab extends PluginSettingTab {
 		addGroupBtn.onclick = async () => {
 			this.plugin.settings.relationGroups.push({ name: "New Group", enabled: true, isCollapsed: false, pairs: [] });
 			await this.plugin.saveSettings();
-			this.display();
+			this.refresh(); // Used refresh() to prevent jumping
 		};
 
-		// --- UX FIX: Dynamic Toggle All Button ---
 		const hasEnabledItems = this.plugin.settings.relationGroups.some(g =>
 			g.enabled || g.pairs.some(p => p.enabled)
 		);
@@ -348,7 +356,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				g.pairs.forEach(p => p.enabled = newState);
 			});
 			await this.plugin.saveSettings();
-			this.display();
+			this.refresh(); // Used refresh() to prevent jumping
 		};
 
 		const rawKeys = new Set<string>();
@@ -372,7 +380,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				attr: { style: "border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 16px; background: var(--background-secondary); transition: border 0.2s ease;" }
 			});
 
-			// --- GROUP DRAG OVER UX FIX ---
 			groupContainer.addEventListener("dragover", (e) => {
 				e.preventDefault();
 				if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -399,18 +406,17 @@ export class CompassSettingTab extends PluginSettingTab {
 					this.plugin.settings.relationGroups.splice(groupIndex, 0, movedGroup);
 					this.draggedGroupIndex = null;
 					await this.plugin.saveSettings();
-					this.display();
+					this.refresh(); // Used refresh()
 				}
 				else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
 					const movedPair = this.plugin.settings.relationGroups[this.draggedPairData.groupIndex].pairs.splice(this.draggedPairData.pairIndex, 1)[0];
 					this.plugin.settings.relationGroups[groupIndex].pairs.push(movedPair);
 					this.draggedPairData = null;
 					await this.plugin.saveSettings();
-					this.display();
+					this.refresh(); // Used refresh()
 				}
 			});
 
-			// --- CUSTOM ALIGNED FOLDER HEADER ---
 			const headerSetting = new Setting(groupContainer);
 			headerSetting.settingEl.style.borderBottom = "1px solid var(--background-modifier-border)";
 			headerSetting.settingEl.style.paddingBottom = "8px";
@@ -423,7 +429,6 @@ export class CompassSettingTab extends PluginSettingTab {
 			headerSetting.infoEl.style.flex = "1";
 			headerSetting.infoEl.style.minWidth = "200px";
 
-			// Group Drag Handle
 			const dragHandle = headerSetting.infoEl.createDiv({
 				attr: { style: "cursor: grab; opacity: 0.5; padding: 4px; display: flex; align-items: center;" }
 			});
@@ -445,7 +450,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				groupContainer.style.border = "1px solid var(--background-modifier-border)";
 			});
 
-			// Collapse Button
 			const collapseBtn = headerSetting.infoEl.createDiv({
 				attr: { style: "cursor: pointer; display: flex; align-items: center; opacity: 0.7; padding: 4px; border-radius: 4px;" }
 			});
@@ -455,10 +459,9 @@ export class CompassSettingTab extends PluginSettingTab {
 			collapseBtn.onclick = async () => {
 				group.isCollapsed = !group.isCollapsed;
 				await this.plugin.saveSettings();
-				this.display();
+				this.refresh(); // Used refresh()
 			};
 
-			// Inline Edit Title UI 
 			const titleContainer = headerSetting.infoEl.createDiv({ attr: { style: "display: flex; flex: 1; align-items: center; min-width: 0;" } });
 
 			const titleSpan = titleContainer.createSpan({
@@ -511,9 +514,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				}
 			});
 
-			// Header Right Side Actions
 			headerSetting
-				// --- UX FIX: Cascade Folder Toggle to Pairs ---
 				.addExtraButton(btn => btn
 					.setIcon(group.enabled ? "eye" : "eye-off")
 					.setTooltip(group.enabled ? "Disable folder and all pairs" : "Enable folder and all pairs")
@@ -522,7 +523,7 @@ export class CompassSettingTab extends PluginSettingTab {
 						group.enabled = newState;
 						group.pairs.forEach(p => p.enabled = newState);
 						await this.plugin.saveSettings();
-						this.display();
+						this.refresh(); // Used refresh()
 					})
 				)
 				.addExtraButton(btn => btn
@@ -532,10 +533,9 @@ export class CompassSettingTab extends PluginSettingTab {
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
 						group.isCollapsed = false;
 						await this.plugin.saveSettings();
-						this.display();
+						this.refresh(); // Used refresh()
 					})
 				)
-				// --- UX FIX: Delete Confirmation Dialog ---
 				.addExtraButton(btn => btn
 					.setIcon("trash")
 					.setTooltip("Delete entire folder")
@@ -543,15 +543,13 @@ export class CompassSettingTab extends PluginSettingTab {
 						if (window.confirm(`Are you sure you want to delete the folder "${group.name}" and all its pairs?`)) {
 							this.plugin.settings.relationGroups.splice(groupIndex, 1);
 							await this.plugin.saveSettings();
-							this.display();
+							this.refresh(); // Used refresh()
 						}
 					})
 				);
 
-			// --- PAIRS CONTAINER ---
 			const pairsContainer = groupContainer.createDiv();
 
-			// --- UX FIX: Visual Hierarchy Indentation ---
 			pairsContainer.style.paddingLeft = "38px";
 
 			if (group.isCollapsed) pairsContainer.style.display = "none";
@@ -575,7 +573,7 @@ export class CompassSettingTab extends PluginSettingTab {
 						.onClick(async () => {
 							pair.enabled = !pair.enabled;
 							await this.plugin.saveSettings();
-							this.display();
+							this.refresh(); // Used refresh()
 						})
 					)
 					.addText((text) => {
@@ -605,7 +603,7 @@ export class CompassSettingTab extends PluginSettingTab {
 							.onClick(async () => {
 								group.pairs.splice(pairIndex, 1);
 								await this.plugin.saveSettings();
-								this.display();
+								this.refresh(); // Used refresh()
 							})
 					);
 
@@ -641,7 +639,6 @@ export class CompassSettingTab extends PluginSettingTab {
 					el.style.filter = "grayscale(100%)";
 				}
 
-				// --- PAIR DRAG AND DROP ---
 				el.draggable = true;
 				el.style.cursor = "grab";
 
@@ -689,7 +686,7 @@ export class CompassSettingTab extends PluginSettingTab {
 						this.plugin.settings.relationGroups[groupIndex].pairs.splice(pairIndex, 0, movedItem);
 						this.draggedPairData = null;
 						await this.plugin.saveSettings();
-						this.display();
+						this.refresh(); // Used refresh()
 					}
 				});
 
