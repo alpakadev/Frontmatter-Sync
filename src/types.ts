@@ -16,13 +16,13 @@ export interface RelationPair {
 export interface RelationGroup {
     name: string;
     enabled: boolean;
+    isCollapsed?: boolean;
     pairs: RelationPair[];
 }
 
 export interface CompassSyncSettings {
     relationGroups: RelationGroup[];
     notifications: NotificationSettings;
-    // Retained for backward compatibility migration
     relations?: RelationPair[];
 }
 
@@ -38,6 +38,7 @@ export const DEFAULT_SETTINGS: CompassSyncSettings = {
         {
             name: "Default Group",
             enabled: true,
+            isCollapsed: false,
             pairs: []
         }
     ],

@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, AbstractInputSuggest, Modal } from "obsidian";
+import { App, PluginSettingTab, Setting, AbstractInputSuggest, Modal, setIcon, TextComponent } from "obsidian";
 import type CompassSyncPlugin from "./main";
 import { PendingSync } from "./types";
 
@@ -324,7 +324,7 @@ export class CompassSettingTab extends PluginSettingTab {
 
 		const addGroupBtn = topActions.createEl("button", { text: "Add Folder Group", cls: "mod-cta" });
 		addGroupBtn.onclick = async () => {
-			this.plugin.settings.relationGroups.push({ name: "New Group", enabled: true, pairs: [] });
+			this.plugin.settings.relationGroups.push({ name: "New Group", enabled: true, isCollapsed: false, pairs: [] });
 			await this.plugin.saveSettings();
 			this.display();
 		};
@@ -360,16 +360,49 @@ export class CompassSettingTab extends PluginSettingTab {
 				attr: { style: "border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 16px; background: var(--background-secondary);" }
 			});
 
-			// Group Header
-			const headerSetting = new Setting(groupContainer)
-				.addText(text => text
-					.setValue(group.name)
-					.setPlaceholder("Folder Name")
-					.onChange(async (val) => {
-						group.name = val;
-						await this.plugin.saveSettings();
-					})
-				)
+			// --- CUSTOM ALIGNED FOLDER HEADER ---
+			const headerSetting = new Setting(groupContainer);
+			headerSetting.settingEl.style.borderBottom = "1px solid var(--background-modifier-border)";
+			headerSetting.settingEl.style.paddingBottom = "8px";
+			headerSetting.settingEl.style.marginBottom = "12px";
+			headerSetting.settingEl.style.flexWrap = "wrap";
+
+			// Setup left side for Name and Collapse Icon
+			headerSetting.infoEl.style.display = "flex";
+			headerSetting.infoEl.style.alignItems = "center";
+			headerSetting.infoEl.style.gap = "8px";
+			headerSetting.infoEl.style.flex = "1";
+			headerSetting.infoEl.style.minWidth = "200px";
+
+			const collapseBtn = headerSetting.infoEl.createDiv({
+				attr: { style: "cursor: pointer; display: flex; align-items: center; opacity: 0.7; padding: 4px; border-radius: 4px;" }
+			});
+			setIcon(collapseBtn, group.isCollapsed ? "chevron-right" : "chevron-down");
+			collapseBtn.addEventListener("mouseover", () => collapseBtn.style.background = "var(--background-modifier-hover)");
+			collapseBtn.addEventListener("mouseout", () => collapseBtn.style.background = "transparent");
+			collapseBtn.onclick = async () => {
+				group.isCollapsed = !group.isCollapsed;
+				await this.plugin.saveSettings();
+				this.display();
+			};
+
+			const titleInput = new TextComponent(headerSetting.infoEl)
+				.setValue(group.name)
+				.setPlaceholder("Folder Name")
+				.onChange(async (val) => {
+					group.name = val;
+					await this.plugin.saveSettings();
+				});
+			titleInput.inputEl.style.fontWeight = "bold";
+			titleInput.inputEl.style.fontSize = "1.1em";
+			titleInput.inputEl.style.border = "none";
+			titleInput.inputEl.style.boxShadow = "none";
+			titleInput.inputEl.style.background = "transparent";
+			titleInput.inputEl.style.padding = "4px 8px";
+			titleInput.inputEl.style.flex = "1";
+
+			// Setup right side for actions
+			headerSetting
 				.addExtraButton(btn => btn
 					.setIcon(group.enabled ? "eye" : "eye-off")
 					.setTooltip(group.enabled ? "Disable entire folder" : "Enable folder")
@@ -384,6 +417,7 @@ export class CompassSettingTab extends PluginSettingTab {
 					.setTooltip("Add relation pair to folder")
 					.onClick(async () => {
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
+						group.isCollapsed = false; // Auto-expand when adding new pairs
 						await this.plugin.saveSettings();
 						this.display();
 					})
@@ -398,11 +432,13 @@ export class CompassSettingTab extends PluginSettingTab {
 					})
 				);
 
-			headerSetting.settingEl.style.borderBottom = "1px solid var(--background-modifier-border)";
-			headerSetting.settingEl.style.paddingBottom = "12px";
-			headerSetting.settingEl.style.marginBottom = "8px";
-
+			// --- PAIRS CONTAINER ---
 			const pairsContainer = groupContainer.createDiv();
+
+			// Handle visual states
+			if (group.isCollapsed) {
+				pairsContainer.style.display = "none";
+			}
 
 			if (!group.enabled) {
 				pairsContainer.style.opacity = "0.5";
@@ -414,7 +450,6 @@ export class CompassSettingTab extends PluginSettingTab {
 				let inverseInput: HTMLInputElement | null = null;
 
 				const pairSetting = new Setting(pairsContainer)
-					// Replaced the Pair # text with a clean drag handle
 					.addExtraButton(btn => btn
 						.setIcon("menu")
 						.setTooltip("Drag to reorder")
@@ -459,9 +494,22 @@ export class CompassSettingTab extends PluginSettingTab {
 							})
 					);
 
+				// Responsive and Flex adjustments for pairs
 				const el = pairSetting.settingEl;
 				el.style.borderTop = "none";
 				el.style.padding = "6px 0";
+				el.style.flexWrap = "wrap";
+				el.style.gap = "8px";
+
+				// Stretch inputs to fill void
+				if (forwardInput) {
+					forwardInput.style.flex = "1 1 120px";
+					forwardInput.style.width = "auto";
+				}
+				if (inverseInput) {
+					inverseInput.style.flex = "1 1 120px";
+					inverseInput.style.width = "auto";
+				}
 
 				if (!pair.enabled) {
 					el.style.opacity = "0.4";
@@ -473,7 +521,6 @@ export class CompassSettingTab extends PluginSettingTab {
 
 				el.addEventListener("dragstart", (e) => {
 					if (e.dataTransfer) {
-						// Store both group index and pair index for accurate dropping
 						e.dataTransfer.setData("text/plain", JSON.stringify({ groupIndex, pairIndex }));
 						e.dataTransfer.effectAllowed = "move";
 						el.style.opacity = "0.3";

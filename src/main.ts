@@ -10,7 +10,6 @@ export default class CompassSyncPlugin extends Plugin {
 	private timeoutId: number | null = null;
 	private prevFm: Map<string, Record<string, any>> = new Map();
 
-	// Queue system for mitigating notification spam
 	private newFilesQueue: Set<TFile> = new Set();
 	private newFilesTimeoutId: number | null = null;
 
@@ -42,7 +41,6 @@ export default class CompassSyncPlugin extends Plugin {
 					this.newFilesQueue.add(file);
 
 					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
-					// Debounce for 2 seconds to catch bulk cloud/git syncs
 					this.newFilesTimeoutId = window.setTimeout(() => {
 						void this.processNewFilesQueue();
 					}, 2000);
@@ -402,18 +400,17 @@ export default class CompassSyncPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 
-		// Migration handling for older flat structures
 		if (this.settings.relations && this.settings.relations.length > 0) {
 			this.settings.relationGroups = [{
 				name: "Imported Pairs",
 				enabled: true,
+				isCollapsed: false,
 				pairs: this.settings.relations
 			}];
 			delete this.settings.relations;
 			await this.saveSettings();
 		}
 
-		// Ensure arrays and objects exist
 		if (!this.settings.relationGroups) this.settings.relationGroups = [];
 	}
 
