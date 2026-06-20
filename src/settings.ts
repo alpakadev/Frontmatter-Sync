@@ -11,7 +11,8 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 		app: App,
 		private inputEl: HTMLInputElement,
 		private keys: string[],
-		private nextInputEl?: HTMLInputElement
+		private nextInputEl?: HTMLInputElement,
+		private onFinalEnter?: () => void
 	) {
 		super(app, inputEl);
 
@@ -28,6 +29,8 @@ class PropertySuggest extends AbstractInputSuggest<string> {
 			window.setTimeout(() => {
 				this.nextInputEl!.focus();
 			}, 10);
+		} else if (this.onFinalEnter) {
+			this.onFinalEnter();
 		}
 	}
 
@@ -280,6 +283,9 @@ export class CompassSettingTab extends PluginSettingTab {
 
 	private draggedGroupIndex: number | null = null;
 	private draggedPairData: { groupIndex: number, pairIndex: number } | null = null;
+
+	// Track newly created pairs for autofocus
+	private focusTarget: { groupIndex: number, pairIndex: number } | null = null;
 
 	constructor(app: App, plugin: CompassSyncPlugin) {
 		super(app, plugin);
@@ -564,6 +570,9 @@ export class CompassSettingTab extends PluginSettingTab {
 					.onClick(async () => {
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
 						group.isCollapsed = false;
+
+						// Focus the newly created pair
+						this.focusTarget = { groupIndex, pairIndex: group.pairs.length - 1 };
 						await this.plugin.saveSettings();
 						this.refresh();
 					})
@@ -572,7 +581,6 @@ export class CompassSettingTab extends PluginSettingTab {
 					.setIcon("trash")
 					.setTooltip("Delete entire folder")
 					.onClick(() => {
-						// Open native Obsidian confirmation modal instead of window.confirm
 						new ConfirmDeleteModal(this.app, group.name, async () => {
 							this.plugin.settings.relationGroups.splice(groupIndex, 1);
 							await this.plugin.saveSettings();
@@ -667,6 +675,14 @@ export class CompassSettingTab extends PluginSettingTab {
 					inverseInput.style.width = "100%";
 				}
 
+				// --- UX FIX: Auto-Focus the new input field ---
+				if (this.focusTarget && this.focusTarget.groupIndex === groupIndex && this.focusTarget.pairIndex === pairIndex) {
+					window.setTimeout(() => {
+						forwardInput?.focus();
+					}, 20); // Small tick to ensure DOM is fully attached
+					this.focusTarget = null;
+				}
+
 				if (!pair.enabled) {
 					el.style.opacity = "0.4";
 					el.style.filter = "grayscale(100%)";
@@ -725,7 +741,17 @@ export class CompassSettingTab extends PluginSettingTab {
 
 				if (forwardInput && inverseInput) {
 					new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
-					new PropertySuggest(this.app, inverseInput, keysArray);
+
+					// --- UX FIX: Add new pair on Enter ---
+					new PropertySuggest(this.app, inverseInput, keysArray, undefined, async () => {
+						// Safety guard: Don't spawn a new pair if the current one is completely empty
+						if (!pair.forward && !pair.inverse) return;
+
+						group.pairs.push({ forward: "", inverse: "", enabled: true });
+						this.focusTarget = { groupIndex, pairIndex: group.pairs.length - 1 };
+						await this.plugin.saveSettings();
+						this.refresh();
+					});
 				}
 			});
 		});
