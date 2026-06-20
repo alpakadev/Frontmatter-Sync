@@ -13,9 +13,17 @@ export interface RelationPair {
     enabled: boolean;
 }
 
+export interface RelationGroup {
+    name: string;
+    enabled: boolean;
+    pairs: RelationPair[];
+}
+
 export interface CompassSyncSettings {
-    relations: RelationPair[];
+    relationGroups: RelationGroup[];
     notifications: NotificationSettings;
+    // Retained for backward compatibility migration
+    relations?: RelationPair[];
 }
 
 export interface PendingSync {
@@ -26,7 +34,13 @@ export interface PendingSync {
 }
 
 export const DEFAULT_SETTINGS: CompassSyncSettings = {
-    relations: [],
+    relationGroups: [
+        {
+            name: "Default Group",
+            enabled: true,
+            pairs: []
+        }
+    ],
     notifications: {
         backgroundSync: true,
         plainTextWarning: true,

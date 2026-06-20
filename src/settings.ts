@@ -83,7 +83,7 @@ class BulkSyncModal extends Modal {
 
 	constructor(app: App, private plugin: CompassSyncPlugin, private pending: PendingSync[]) {
 		super(app);
-		this.selected = new Set(this.pending); // Default select all
+		this.selected = new Set(this.pending);
 	}
 
 	onOpen() {
@@ -102,7 +102,6 @@ class BulkSyncModal extends Modal {
 			cls: "setting-item-description"
 		});
 
-		// --- TOOLBAR ---
 		const toolbar = contentEl.createDiv({ attr: { style: "display: flex; gap: 8px; margin-bottom: 12px; align-items: center;" } });
 
 		toolbar.createEl("button", { text: "Select All" }).onclick = () => {
@@ -122,13 +121,11 @@ class BulkSyncModal extends Modal {
 			this.renderList();
 		};
 
-		// --- LIST CONTAINER ---
 		this.listContainer = contentEl.createDiv({
 			attr: { style: "max-height: 400px; overflow-y: auto; margin-bottom: 20px; border: 1px solid var(--background-modifier-border); padding: 10px; border-radius: 5px; background: var(--background-secondary);" }
 		});
 
-		// --- ACTION FOOTER ---
-		const footer = new Setting(contentEl)
+		new Setting(contentEl)
 			.addButton((btn) => btn
 				.setButtonText("Close")
 				.onClick(() => this.close())
@@ -144,7 +141,6 @@ class BulkSyncModal extends Modal {
 					});
 			});
 
-		// Initial Render
 		this.renderList();
 	}
 
@@ -152,7 +148,6 @@ class BulkSyncModal extends Modal {
 		this.listContainer.empty();
 
 		if (this.viewMode === "folder") {
-			// GROUP BY FOLDER -> THEN BY FILE
 			const folders = new Map<string, PendingSync[]>();
 			this.pending.forEach(p => {
 				const f = p.targetFile.parent?.path || "/ (Root)";
@@ -182,10 +177,9 @@ class BulkSyncModal extends Modal {
 			});
 
 		} else {
-			// GROUP BY FILE ONLY
 			const files = new Map<string, PendingSync[]>();
 			this.pending.forEach(p => {
-				const f = p.targetFile.path; // Use full path to differentiate same-named files
+				const f = p.targetFile.path;
 				if (!files.has(f)) files.set(f, []);
 				files.get(f)!.push(p);
 			});
@@ -198,7 +192,6 @@ class BulkSyncModal extends Modal {
 			});
 		}
 
-		// Update Button State
 		if (this.applyBtn) {
 			this.applyBtn.innerText = `Apply ${this.selected.size} Changes`;
 			this.applyBtn.disabled = this.selected.size === 0;
@@ -217,7 +210,7 @@ class BulkSyncModal extends Modal {
 		cb.onchange = (e) => {
 			const checked = (e.target as HTMLInputElement).checked;
 			syncs.forEach(s => checked ? this.selected.add(s) : this.selected.delete(s));
-			this.renderList(); // Re-render to cascade visually
+			this.renderList();
 		};
 
 		header.createSpan({ text: label, attr: { style: "font-weight: 600; cursor: pointer;" } }).onclick = () => cb.click();
@@ -232,7 +225,7 @@ class BulkSyncModal extends Modal {
 		cb.onchange = (e) => {
 			const checked = (e.target as HTMLInputElement).checked;
 			checked ? this.selected.add(sync) : this.selected.delete(sync);
-			this.renderList(); // Re-render to update parent headers
+			this.renderList();
 		};
 
 		const textSpan = item.createSpan({ attr: { style: "font-size: 0.9em; font-family: var(--font-monospace); color: var(--text-muted); cursor: pointer;" } });
@@ -315,7 +308,7 @@ export class CompassSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Interactive ghost link prompt")
-			.setDesc("Show an interactive prompt to resolve pending links when creating a new note.")
+			.setDesc("Show an interactive prompt to resolve pending links when creating or importing notes.")
 			.addToggle((toggle) => toggle
 				.setValue(this.plugin.settings.notifications.ghostLinkPrompt)
 				.onChange(async (value) => {
@@ -325,21 +318,26 @@ export class CompassSettingTab extends PluginSettingTab {
 			);
 
 		// --- RELATIONS SECTION ---
-		containerEl.createEl("h3", { text: "Relation Pairs" });
+		containerEl.createEl("h3", { text: "Relation Groups" });
 
-		new Setting(containerEl)
-			.setName("Add a new relation pair")
-			.setDesc("Create a bidirectional link. You can drag and drop pairs to reorder them.")
-			.addButton((btn) =>
-				btn
-					.setButtonText("Add +")
-					.setCta()
-					.onClick(async () => {
-						this.plugin.settings.relations.push({ forward: "", inverse: "", enabled: true });
-						await this.plugin.saveSettings();
-						this.display();
-					})
-			);
+		const topActions = containerEl.createDiv({ attr: { style: "display: flex; gap: 8px; margin-bottom: 20px; align-items: center;" } });
+
+		const addGroupBtn = topActions.createEl("button", { text: "Add Folder Group", cls: "mod-cta" });
+		addGroupBtn.onclick = async () => {
+			this.plugin.settings.relationGroups.push({ name: "New Group", enabled: true, pairs: [] });
+			await this.plugin.saveSettings();
+			this.display();
+		};
+
+		const deactivateAllBtn = topActions.createEl("button", { text: "Deactivate All" });
+		deactivateAllBtn.onclick = async () => {
+			this.plugin.settings.relationGroups.forEach(g => {
+				g.enabled = false;
+				g.pairs.forEach(p => p.enabled = false);
+			});
+			await this.plugin.saveSettings();
+			this.display();
+		};
 
 		const rawKeys = new Set<string>();
 		if (typeof (this.app.metadataCache as any).getAllPropertyKeys === "function") {
@@ -357,112 +355,173 @@ export class CompassSettingTab extends PluginSettingTab {
 
 		const listContainer = containerEl.createDiv();
 
-		this.plugin.settings.relations.forEach((pair, index) => {
-			if (pair.enabled === undefined) pair.enabled = true;
+		this.plugin.settings.relationGroups.forEach((group, groupIndex) => {
+			const groupContainer = listContainer.createDiv({
+				attr: { style: "border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 16px; background: var(--background-secondary);" }
+			});
 
-			let forwardInput: HTMLInputElement | null = null;
-			let inverseInput: HTMLInputElement | null = null;
-
-			const setting = new Setting(listContainer)
-				.setName(`≡ Pair #${index + 1}`)
-
-				.addExtraButton((btn) => btn
-					.setIcon(pair.enabled ? "eye" : "eye-off")
-					.setTooltip(pair.enabled ? "Pause relation" : "Enable relation")
+			// Group Header
+			const headerSetting = new Setting(groupContainer)
+				.addText(text => text
+					.setValue(group.name)
+					.setPlaceholder("Folder Name")
+					.onChange(async (val) => {
+						group.name = val;
+						await this.plugin.saveSettings();
+					})
+				)
+				.addExtraButton(btn => btn
+					.setIcon(group.enabled ? "eye" : "eye-off")
+					.setTooltip(group.enabled ? "Disable entire folder" : "Enable folder")
 					.onClick(async () => {
-						pair.enabled = !pair.enabled;
+						group.enabled = !group.enabled;
 						await this.plugin.saveSettings();
 						this.display();
 					})
 				)
+				.addExtraButton(btn => btn
+					.setIcon("plus")
+					.setTooltip("Add relation pair to folder")
+					.onClick(async () => {
+						group.pairs.push({ forward: "", inverse: "", enabled: true });
+						await this.plugin.saveSettings();
+						this.display();
+					})
+				)
+				.addExtraButton(btn => btn
+					.setIcon("trash")
+					.setTooltip("Delete entire folder")
+					.onClick(async () => {
+						this.plugin.settings.relationGroups.splice(groupIndex, 1);
+						await this.plugin.saveSettings();
+						this.display();
+					})
+				);
 
-				.addText((text) => {
-					forwardInput = text.inputEl;
-					text
-						.setPlaceholder("e.g., south")
-						.setValue(pair.forward)
-						.onChange(async (value) => {
-							pair.forward = value;
-							await this.plugin.saveSettings();
-						});
-				})
+			headerSetting.settingEl.style.borderBottom = "1px solid var(--background-modifier-border)";
+			headerSetting.settingEl.style.paddingBottom = "12px";
+			headerSetting.settingEl.style.marginBottom = "8px";
 
-				.addText((text) => {
-					inverseInput = text.inputEl;
-					text
-						.setPlaceholder("e.g., north")
-						.setValue(pair.inverse)
-						.onChange(async (value) => {
-							pair.inverse = value;
-							await this.plugin.saveSettings();
-						});
-				})
+			const pairsContainer = groupContainer.createDiv();
 
-				.addExtraButton((btn) =>
-					btn
-						.setIcon("trash")
-						.setTooltip("Delete relation")
+			if (!group.enabled) {
+				pairsContainer.style.opacity = "0.5";
+				pairsContainer.style.pointerEvents = "none";
+			}
+
+			group.pairs.forEach((pair, pairIndex) => {
+				let forwardInput: HTMLInputElement | null = null;
+				let inverseInput: HTMLInputElement | null = null;
+
+				const pairSetting = new Setting(pairsContainer)
+					// Replaced the Pair # text with a clean drag handle
+					.addExtraButton(btn => btn
+						.setIcon("menu")
+						.setTooltip("Drag to reorder")
+					)
+					.addExtraButton(btn => btn
+						.setIcon(pair.enabled ? "eye" : "eye-off")
+						.setTooltip(pair.enabled ? "Pause relation" : "Enable relation")
 						.onClick(async () => {
-							this.plugin.settings.relations.splice(index, 1);
+							pair.enabled = !pair.enabled;
 							await this.plugin.saveSettings();
 							this.display();
 						})
-				);
+					)
+					.addText((text) => {
+						forwardInput = text.inputEl;
+						text
+							.setPlaceholder("e.g., south")
+							.setValue(pair.forward)
+							.onChange(async (value) => {
+								pair.forward = value;
+								await this.plugin.saveSettings();
+							});
+					})
+					.addText((text) => {
+						inverseInput = text.inputEl;
+						text
+							.setPlaceholder("e.g., north")
+							.setValue(pair.inverse)
+							.onChange(async (value) => {
+								pair.inverse = value;
+								await this.plugin.saveSettings();
+							});
+					})
+					.addExtraButton((btn) =>
+						btn
+							.setIcon("trash")
+							.setTooltip("Delete relation")
+							.onClick(async () => {
+								group.pairs.splice(pairIndex, 1);
+								await this.plugin.saveSettings();
+								this.display();
+							})
+					);
 
-			const el = setting.settingEl;
+				const el = pairSetting.settingEl;
+				el.style.borderTop = "none";
+				el.style.padding = "6px 0";
 
-			if (!pair.enabled) {
-				el.style.opacity = "0.4";
-				el.style.filter = "grayscale(100%)";
-			}
+				if (!pair.enabled) {
+					el.style.opacity = "0.4";
+					el.style.filter = "grayscale(100%)";
+				}
 
-			el.draggable = true;
-			el.style.cursor = "grab";
+				el.draggable = true;
+				el.style.cursor = "grab";
 
-			el.addEventListener("dragstart", (e) => {
-				if (e.dataTransfer) {
-					e.dataTransfer.setData("text/plain", index.toString());
-					e.dataTransfer.effectAllowed = "move";
-					el.style.opacity = "0.3";
+				el.addEventListener("dragstart", (e) => {
+					if (e.dataTransfer) {
+						// Store both group index and pair index for accurate dropping
+						e.dataTransfer.setData("text/plain", JSON.stringify({ groupIndex, pairIndex }));
+						e.dataTransfer.effectAllowed = "move";
+						el.style.opacity = "0.3";
+					}
+				});
+
+				el.addEventListener("dragend", () => {
+					el.style.opacity = pair.enabled ? "1" : "0.4";
+					el.style.borderTop = "";
+				});
+
+				el.addEventListener("dragover", (e) => {
+					e.preventDefault();
+					if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+					el.style.borderTop = "2px solid var(--interactive-accent)";
+				});
+
+				el.addEventListener("dragleave", () => {
+					el.style.borderTop = "";
+				});
+
+				el.addEventListener("drop", async (e) => {
+					e.preventDefault();
+					el.style.borderTop = "";
+
+					if (!e.dataTransfer) return;
+					try {
+						const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+						const fromGroup = data.groupIndex;
+						const fromPair = data.pairIndex;
+
+						if (fromGroup !== undefined && fromPair !== undefined) {
+							const movedItem = this.plugin.settings.relationGroups[fromGroup].pairs.splice(fromPair, 1)[0];
+							this.plugin.settings.relationGroups[groupIndex].pairs.splice(pairIndex, 0, movedItem);
+
+							await this.plugin.saveSettings();
+							this.display();
+						}
+					} catch (err) {
+						// Ignore invalid drag drops
+					}
+				});
+
+				if (forwardInput && inverseInput) {
+					new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
+					new PropertySuggest(this.app, inverseInput, keysArray);
 				}
 			});
-
-			el.addEventListener("dragend", () => {
-				el.style.opacity = pair.enabled ? "1" : "0.4";
-				el.style.borderTop = "";
-			});
-
-			el.addEventListener("dragover", (e) => {
-				e.preventDefault();
-				if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-				el.style.borderTop = "2px solid var(--interactive-accent)";
-			});
-
-			el.addEventListener("dragleave", () => {
-				el.style.borderTop = "";
-			});
-
-			el.addEventListener("drop", async (e) => {
-				e.preventDefault();
-				el.style.borderTop = "";
-
-				if (!e.dataTransfer) return;
-				const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
-
-				if (!isNaN(fromIndex) && fromIndex !== index) {
-					const relations = this.plugin.settings.relations;
-					const [movedItem] = relations.splice(fromIndex, 1);
-					relations.splice(index, 0, movedItem);
-
-					await this.plugin.saveSettings();
-					this.display();
-				}
-			});
-
-			if (forwardInput && inverseInput) {
-				new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
-				new PropertySuggest(this.app, inverseInput, keysArray);
-			}
 		});
 	}
 }

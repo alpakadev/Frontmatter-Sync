@@ -10,6 +10,10 @@ export default class CompassSyncPlugin extends Plugin {
 	private timeoutId: number | null = null;
 	private prevFm: Map<string, Record<string, any>> = new Map();
 
+	// Queue system for mitigating notification spam
+	private newFilesQueue: Set<TFile> = new Set();
+	private newFilesTimeoutId: number | null = null;
+
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new CompassSettingTab(this.app, this));
@@ -35,9 +39,13 @@ export default class CompassSyncPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
 				if (file instanceof TFile && file.extension === "md") {
-					window.setTimeout(() => {
-						void this.handleNewFileCreated(file);
-					}, 500);
+					this.newFilesQueue.add(file);
+
+					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
+					// Debounce for 2 seconds to catch bulk cloud/git syncs
+					this.newFilesTimeoutId = window.setTimeout(() => {
+						void this.processNewFilesQueue();
+					}, 2000);
 				}
 			})
 		);
@@ -53,14 +61,16 @@ export default class CompassSyncPlugin extends Plugin {
 		const currentFm = cache.frontmatter || {};
 		const previousFm = this.prevFm.get(file.path) || {};
 
-		for (const pair of this.settings.relations) {
-			if (!pair.enabled) continue;
-			if (!pair.forward || !pair.inverse) continue;
+		for (const group of this.settings.relationGroups) {
+			if (!group.enabled) continue;
+			for (const pair of group.pairs) {
+				if (!pair.enabled || !pair.forward || !pair.inverse) continue;
 
-			await this.processRelation(file, pair.forward, pair.inverse, currentFm, previousFm);
+				await this.processRelation(file, pair.forward, pair.inverse, currentFm, previousFm);
 
-			if (pair.forward !== pair.inverse) {
-				await this.processRelation(file, pair.inverse, pair.forward, currentFm, previousFm);
+				if (pair.forward !== pair.inverse) {
+					await this.processRelation(file, pair.inverse, pair.forward, currentFm, previousFm);
+				}
 			}
 		}
 
@@ -76,44 +86,48 @@ export default class CompassSyncPlugin extends Plugin {
 			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
 			if (!(sourceFile instanceof TFile)) continue;
 
-			for (const pair of this.settings.relations) {
-				if (!pair.enabled || !pair.forward || !pair.inverse) continue;
+			for (const group of this.settings.relationGroups) {
+				if (!group.enabled) continue;
 
-				// 1. Scan Forward -> Inverse
-				const targetsForward = this.extractLinks(previousFm[pair.forward]);
-				for (const targetName of targetsForward.valid) {
-					const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
-					if (targetFile instanceof TFile) {
-						const targetFm = this.prevFm.get(targetFile.path) || {};
-						const inverseLinks = this.extractLinks(targetFm[pair.inverse]);
+				for (const pair of group.pairs) {
+					if (!pair.enabled || !pair.forward || !pair.inverse) continue;
 
-						if (!inverseLinks.valid.includes(sourceFile.basename)) {
-							pending.push({
-								sourceName: sourceFile.basename,
-								sourceFile: sourceFile,
-								targetFile: targetFile,
-								inverseKey: pair.inverse
-							});
-						}
-					}
-				}
-
-				// 2. Scan Inverse -> Forward
-				if (pair.forward !== pair.inverse) {
-					const targetsInverse = this.extractLinks(previousFm[pair.inverse]);
-					for (const targetName of targetsInverse.valid) {
+					// 1. Scan Forward -> Inverse
+					const targetsForward = this.extractLinks(previousFm[pair.forward]);
+					for (const targetName of targetsForward.valid) {
 						const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
 						if (targetFile instanceof TFile) {
 							const targetFm = this.prevFm.get(targetFile.path) || {};
-							const forwardLinks = this.extractLinks(targetFm[pair.forward]);
+							const inverseLinks = this.extractLinks(targetFm[pair.inverse]);
 
-							if (!forwardLinks.valid.includes(sourceFile.basename)) {
+							if (!inverseLinks.valid.includes(sourceFile.basename)) {
 								pending.push({
 									sourceName: sourceFile.basename,
 									sourceFile: sourceFile,
 									targetFile: targetFile,
-									inverseKey: pair.forward
+									inverseKey: pair.inverse
 								});
+							}
+						}
+					}
+
+					// 2. Scan Inverse -> Forward
+					if (pair.forward !== pair.inverse) {
+						const targetsInverse = this.extractLinks(previousFm[pair.inverse]);
+						for (const targetName of targetsInverse.valid) {
+							const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
+							if (targetFile instanceof TFile) {
+								const targetFm = this.prevFm.get(targetFile.path) || {};
+								const forwardLinks = this.extractLinks(targetFm[pair.forward]);
+
+								if (!forwardLinks.valid.includes(sourceFile.basename)) {
+									pending.push({
+										sourceName: sourceFile.basename,
+										sourceFile: sourceFile,
+										targetFile: targetFile,
+										inverseKey: pair.forward
+									});
+								}
 							}
 						}
 					}
@@ -135,7 +149,6 @@ export default class CompassSyncPlugin extends Plugin {
 		}
 		new Notice(`Bulk Sync Complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
 	}
-
 
 	// --- STRICT LINK PARSING ---
 
@@ -271,83 +284,98 @@ export default class CompassSyncPlugin extends Plugin {
 		}
 	}
 
-	// --- GHOST LINK RESOLUTION ---
+	// --- GHOST LINK QUEUE RESOLUTION ---
 
-	async handleNewFileCreated(newFile: TFile) {
-		if (!this.settings.notifications.ghostLinkPrompt) return;
+	async processNewFilesQueue() {
+		if (!this.settings.notifications.ghostLinkPrompt) {
+			this.newFilesQueue.clear();
+			return;
+		}
 
-		const pendingSyncs: { sourceFile: TFile; inverseKey: string }[] = [];
+		const filesToProcess = Array.from(this.newFilesQueue);
+		this.newFilesQueue.clear();
+		if (filesToProcess.length === 0) return;
+
+		const pendingSyncs: { targetFile: TFile, sourceFile: TFile; inverseKey: string }[] = [];
 
 		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
 			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
 			if (!(sourceFile instanceof TFile)) continue;
 
-			for (const pair of this.settings.relations) {
-				if (!pair.enabled) continue;
-				if (!pair.forward || !pair.inverse) continue;
+			for (const group of this.settings.relationGroups) {
+				if (!group.enabled) continue;
+				for (const pair of group.pairs) {
+					if (!pair.enabled || !pair.forward || !pair.inverse) continue;
 
-				const targetsForward = this.extractLinks(previousFm[pair.forward]);
-				if (targetsForward.valid.includes(newFile.basename)) {
-					pendingSyncs.push({ sourceFile, inverseKey: pair.inverse });
-				}
+					const targetsForward = this.extractLinks(previousFm[pair.forward]);
+					const targetsInverse = pair.forward !== pair.inverse ? this.extractLinks(previousFm[pair.inverse]) : { valid: [], invalid: [] };
 
-				if (pair.forward !== pair.inverse) {
-					const targetsInverse = this.extractLinks(previousFm[pair.inverse]);
-					if (targetsInverse.valid.includes(newFile.basename)) {
-						pendingSyncs.push({ sourceFile, inverseKey: pair.forward });
+					for (const newFile of filesToProcess) {
+						if (targetsForward.valid.includes(newFile.basename)) {
+							pendingSyncs.push({ targetFile: newFile, sourceFile, inverseKey: pair.inverse });
+						}
+						if (targetsInverse.valid.includes(newFile.basename)) {
+							pendingSyncs.push({ targetFile: newFile, sourceFile, inverseKey: pair.forward });
+						}
 					}
 				}
 			}
 		}
 
 		if (pendingSyncs.length > 0) {
-			const notice = new Notice("", 0);
-			notice.noticeEl.empty();
-
-			notice.noticeEl.createDiv({
-				text: `Relation Sync: "${newFile.basename}" has ${pendingSyncs.length} pending backlink(s).`,
-				attr: { style: "margin-bottom: 12px;" }
-			});
-
-			const btnContainer = notice.noticeEl.createDiv({
-				attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" }
-			});
-
-			const syncBtn = btnContainer.createEl("button", {
-				text: "Sync Now",
-				cls: "mod-cta"
-			});
-
-			const ignoreBtn = btnContainer.createEl("button", {
-				text: "Ignore"
-			});
-
-			ignoreBtn.onclick = () => {
-				notice.hide();
-			};
-
-			syncBtn.onclick = async () => {
-				syncBtn.innerText = "Syncing...";
-				syncBtn.disabled = true;
-				ignoreBtn.disabled = true;
-
-				for (const sync of pendingSyncs) {
-					await this.modifyTargetNote(
-						newFile.basename,
-						sync.sourceFile,
-						sync.sourceFile.basename,
-						sync.inverseKey,
-						"add"
-					);
-				}
-
-				notice.hide();
-
-				if (this.settings.notifications.backgroundSync) {
-					new Notice(`Successfully synced ${pendingSyncs.length} relation(s) to "${newFile.basename}"!`);
-				}
-			};
+			this.showUnifiedSyncPrompt(pendingSyncs, filesToProcess.length);
 		}
+	}
+
+	private showUnifiedSyncPrompt(pendingSyncs: any[], fileCount: number) {
+		const notice = new Notice("", 0);
+		notice.noticeEl.empty();
+
+		const fileText = fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`;
+
+		notice.noticeEl.createDiv({
+			text: `Relation Sync: Detected ${fileText} with ${pendingSyncs.length} pending backlink(s).`,
+			attr: { style: "margin-bottom: 12px; font-weight: 500;" }
+		});
+
+		const btnContainer = notice.noticeEl.createDiv({
+			attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" }
+		});
+
+		const syncBtn = btnContainer.createEl("button", {
+			text: "Sync All",
+			cls: "mod-cta"
+		});
+
+		const ignoreBtn = btnContainer.createEl("button", {
+			text: "Ignore All"
+		});
+
+		ignoreBtn.onclick = () => {
+			notice.hide();
+		};
+
+		syncBtn.onclick = async () => {
+			syncBtn.innerText = "Syncing...";
+			syncBtn.disabled = true;
+			ignoreBtn.disabled = true;
+
+			for (const sync of pendingSyncs) {
+				await this.modifyTargetNote(
+					sync.targetFile.basename,
+					sync.sourceFile,
+					sync.sourceFile.basename,
+					sync.inverseKey,
+					"add"
+				);
+			}
+
+			notice.hide();
+
+			if (this.settings.notifications.backgroundSync) {
+				new Notice(`Successfully synced ${pendingSyncs.length} relation(s)!`);
+			}
+		};
 	}
 
 	// --- SAFETY HELPERS ---
@@ -374,11 +402,19 @@ export default class CompassSyncPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 
-		if (this.settings.relations) {
-			for (const pair of this.settings.relations) {
-				if (pair.enabled === undefined) pair.enabled = true;
-			}
+		// Migration handling for older flat structures
+		if (this.settings.relations && this.settings.relations.length > 0) {
+			this.settings.relationGroups = [{
+				name: "Imported Pairs",
+				enabled: true,
+				pairs: this.settings.relations
+			}];
+			delete this.settings.relations;
+			await this.saveSettings();
 		}
+
+		// Ensure arrays and objects exist
+		if (!this.settings.relationGroups) this.settings.relationGroups = [];
 	}
 
 	async saveSettings() {
