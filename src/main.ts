@@ -98,6 +98,13 @@ export default class CompassSyncPlugin extends Plugin {
 		}
 
 		const currentFm = cache.frontmatter || {};
+
+		// Intercept and fix Obsidian's native, unaliased file updates
+		if (await this.enforceAliasFormatting(file, currentFm)) {
+			// If we formatted it, it will trigger a new changed event. We abort here to prevent duplicate processing.
+			return;
+		}
+
 		const previousFm = this.prevFm.get(file.path) || {};
 
 		for (const group of this.settings.relationGroups) {
@@ -117,6 +124,77 @@ export default class CompassSyncPlugin extends Plugin {
 	}
 
 	// --- STRICT LINK PARSING & RESOLUTION ENGINE ---
+
+	private async enforceAliasFormatting(file: TFile, fmData: any): Promise<boolean> {
+		if (!this.settings.formatting?.useAliasForPaths) return false;
+
+		let needsUpdate = false;
+
+		for (const group of this.settings.relationGroups) {
+			if (!group.enabled) continue;
+			for (const pair of group.pairs) {
+				if (!pair.enabled) continue;
+
+				const keys = [pair.forward, pair.inverse].filter(Boolean);
+				for (const key of keys) {
+					const val = fmData[key];
+					if (!val) continue;
+
+					const checkStr = (s: string) => {
+						const m = s.trim().match(/^\[\[(.*?)\]\]$/);
+						// Match any path containing a slash but lacking the alias pipe
+						if (m && m[1].includes("/") && !m[1].includes("|")) {
+							needsUpdate = true;
+						}
+					};
+
+					if (Array.isArray(val)) {
+						val.forEach(checkStr);
+					} else if (typeof val === "string") {
+						val.split(",").forEach(checkStr);
+					}
+				}
+			}
+		}
+
+		if (!needsUpdate) return false;
+
+		try {
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				for (const group of this.settings.relationGroups) {
+					if (!group.enabled) continue;
+					for (const pair of group.pairs) {
+						if (!pair.enabled) continue;
+						const keys = [pair.forward, pair.inverse].filter(Boolean);
+						for (const key of keys) {
+							if (!fm[key]) continue;
+
+							const formatStr = (s: string) => {
+								const trimmed = s.trim();
+								const m = trimmed.match(/^\[\[(.*?)\]\]$/);
+								if (m && m[1].includes("/") && !m[1].includes("|")) {
+									const inner = m[1];
+									const basename = inner.split("/").pop()?.split("#")[0];
+									return `[[${inner}|${basename}]]`;
+								}
+								return trimmed;
+							};
+
+							if (Array.isArray(fm[key])) {
+								fm[key] = fm[key].map(formatStr);
+							} else if (typeof fm[key] === "string") {
+								fm[key] = fm[key].split(",").map(formatStr).join(", ");
+							}
+						}
+					}
+				}
+			});
+		} catch (error) {
+			console.error("Error auto-formatting aliases:", error);
+		}
+
+		return true;
+	}
 
 	private parseFrontmatterEntry(value: string): { isValid: boolean, target: string } {
 		const trimmed = value.trim();
@@ -294,15 +372,12 @@ export default class CompassSyncPlugin extends Plugin {
 			return;
 		}
 
-		// --- NEW LINK GENERATION LOGIC ---
 		const linkText = this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
 		let sourceLink = `[[${linkText}]]`;
 
-		// Fix: Check strictly against the basename to guarantee OS-agnostic alias appending
 		if (this.settings.formatting?.useAliasForPaths && linkText !== sourceFile.basename) {
 			sourceLink = `[[${linkText}|${sourceFile.basename}]]`;
 		}
-		// ----------------------------------
 
 		this.setWritingGuard(targetFile.path);
 
