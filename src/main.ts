@@ -1,526 +1,163 @@
 import { Plugin, TFile, TFolder, TAbstractFile, CachedMetadata, Notice } from "obsidian";
-import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync, RelationPair } from "./types";
+import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync } from "./types";
 import { CompassSettingTab } from "./settings";
+import { LinkService } from "./LinkService";
+import { SyncService } from "./SyncService";
+import { TIMERS } from "./constants";
 
 export default class CompassSyncPlugin extends Plugin {
 	settings!: CompassSyncSettings;
 
-	private writingFiles: Set<string> = new Set();
-	private writingTimers: Map<string, number> = new Map();
-	private changeTimers: Map<string, number> = new Map();
-	private prevFm: Map<string, Record<string, any>> = new Map();
+	private linkService!: LinkService;
+	public syncService!: SyncService;
 
-	private newFilesQueue: Set<TFile> = new Set();
+	private changeTimers = new Map<string, number>();
+	private prevFm = new Map<string, Record<string, unknown>>();
+
+	private newFilesQueue = new Set<TFile>();
 	private newFilesTimeoutId: number | null = null;
-
-	private vaultReady: boolean = false;
+	private vaultReady = false;
 
 	async onload() {
 		await this.loadSettings();
+
+		this.linkService = new LinkService(this.app);
+		this.syncService = new SyncService(this.app, this.settings, this.linkService);
+
 		this.addSettingTab(new CompassSettingTab(this.app, this));
 
-		this.app.workspace.onLayoutReady(async () => {
-			for (const file of this.app.vault.getMarkdownFiles()) {
-				const cache = this.app.metadataCache.getFileCache(file);
-				if (cache?.frontmatter) {
-					this.prevFm.set(file.path, this.getTrackedFrontmatter(cache.frontmatter));
-				}
-			}
-
-			this.vaultReady = true;
-
-			if (this.settings.notifications.checkOnStartup) {
-				const pending = await this.previewBulkSync();
-				if (pending.length > 0) {
-					this.showUnifiedSyncPrompt(pending, "startup");
-				}
-			}
-		});
-
-		this.registerEvent(
-			this.app.metadataCache.on("changed", (file, _data, cache) => {
-				if (!this.vaultReady) return;
-
-				const existingTimer = this.changeTimers.get(file.path);
-				if (existingTimer) window.clearTimeout(existingTimer);
-
-				const timer = window.setTimeout(() => {
-					this.changeTimers.delete(file.path);
-					void this.handleFileChange(file, cache);
-				}, 300);
-
-				this.changeTimers.set(file.path, timer);
-			})
-		);
-
-		this.registerEvent(
-			this.app.vault.on("create", (file: TAbstractFile) => {
-				if (!this.vaultReady) return;
-
-				if (file instanceof TFile && file.extension === "md") {
-					if (file.basename.startsWith("Untitled")) return;
-
-					this.newFilesQueue.add(file);
-
-					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
-					this.newFilesTimeoutId = window.setTimeout(() => {
-						void this.processNewFilesQueue();
-					}, 2000);
-				}
-			})
-		);
-
-		this.registerEvent(
-			this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
-				if (!this.vaultReady) return;
-
-				if (file instanceof TFile && file.extension === "md") {
-					const cachedFm = this.prevFm.get(oldPath);
-					if (cachedFm) {
-						this.prevFm.set(file.path, cachedFm);
-						this.prevFm.delete(oldPath);
-					}
-
-					if (!this.settings.notifications.renameDetection) return;
-					if (file.basename.startsWith("Untitled")) return;
-
-					this.newFilesQueue.add(file);
-
-					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
-					this.newFilesTimeoutId = window.setTimeout(() => {
-						void this.processNewFilesQueue();
-					}, 2000);
-				}
-				else if (file instanceof TFolder) {
-					for (const [oldKey, cachedFm] of Array.from(this.prevFm.entries())) {
-						if (oldKey.startsWith(oldPath + "/")) {
-							const newKey = oldKey.replace(oldPath, file.path);
-							this.prevFm.set(newKey, cachedFm);
-							this.prevFm.delete(oldKey);
-						}
-					}
-				}
-			})
-		);
-
-		this.registerEvent(
-			this.app.vault.on("delete", (file: TAbstractFile) => {
-				if (file instanceof TFile) {
-					this.prevFm.delete(file.path);
-					this.clearWritingGuard(file.path);
-					const changeTimer = this.changeTimers.get(file.path);
-					if (changeTimer) {
-						window.clearTimeout(changeTimer);
-						this.changeTimers.delete(file.path);
-					}
-					this.newFilesQueue.delete(file);
-				}
-				else if (file instanceof TFolder) {
-					for (const key of Array.from(this.prevFm.keys())) {
-						if (key.startsWith(file.path + "/")) {
-							this.prevFm.delete(key);
-							this.clearWritingGuard(key);
-							const changeTimer = this.changeTimers.get(key);
-							if (changeTimer) {
-								window.clearTimeout(changeTimer);
-								this.changeTimers.delete(key);
-							}
-						}
-					}
-				}
-			})
-		);
+		this.app.workspace.onLayoutReady(async () => this.initializeCache());
+		this.registerVaultEvents();
 	}
 
 	onunload() {
 		this.changeTimers.forEach(timer => window.clearTimeout(timer));
-		this.writingTimers.forEach(timer => window.clearTimeout(timer));
 		if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
-
+		this.syncService.clearAllGuards();
 		this.changeTimers.clear();
-		this.writingTimers.clear();
-		this.writingFiles.clear();
 		this.prevFm.clear();
 		this.newFilesQueue.clear();
 	}
 
-	private getTrackedFrontmatter(fm: any): Record<string, any> {
-		if (!fm) return {};
-		const tracked: Record<string, any> = {};
-
-		for (const group of this.settings.relationGroups) {
-			if (!group.enabled) continue;
-			for (const pair of group.pairs) {
-				if (!pair.enabled) continue;
-				if (fm[pair.forward] !== undefined) tracked[pair.forward] = structuredClone(fm[pair.forward]);
-				if (fm[pair.inverse] !== undefined) tracked[pair.inverse] = structuredClone(fm[pair.inverse]);
+	private async initializeCache() {
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (cache?.frontmatter) {
+				this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(cache.frontmatter));
 			}
 		}
-		return tracked;
+
+		this.vaultReady = true;
+
+		if (this.settings.notifications.checkOnStartup) {
+			const pending = await this.syncService.previewBulkSync(this.prevFm);
+			if (pending.length > 0) this.showUnifiedSyncPrompt(pending, "startup");
+		}
 	}
 
-	private getDirections(pair: RelationPair): { from: string; to: string }[] {
-		if (!pair.enabled || !pair.forward || !pair.inverse) return [];
-		if (pair.forward === pair.inverse) return [{ from: pair.forward, to: pair.inverse }];
-		return [
-			{ from: pair.forward, to: pair.inverse },
-			{ from: pair.inverse, to: pair.forward }
-		];
+	private registerVaultEvents() {
+		this.registerEvent(this.app.metadataCache.on("changed", (file, _data, cache) => this.debounceFileChange(file, cache)));
+		this.registerEvent(this.app.vault.on("create", (file) => this.handleCreation(file)));
+		this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.handleRename(file, oldPath)));
+		this.registerEvent(this.app.vault.on("delete", (file) => this.handleDeletion(file)));
 	}
 
-	async handleFileChange(file: TFile, cache: CachedMetadata) {
-		if (this.writingFiles.has(file.path)) {
-			this.clearWritingGuard(file.path);
-			this.prevFm.set(file.path, this.getTrackedFrontmatter(cache.frontmatter));
+	private debounceFileChange(file: TFile, cache: CachedMetadata) {
+		if (!this.vaultReady) return;
+
+		const existingTimer = this.changeTimers.get(file.path);
+		if (existingTimer) window.clearTimeout(existingTimer);
+
+		const timer = window.setTimeout(() => {
+			this.changeTimers.delete(file.path);
+			void this.handleFileChange(file, cache);
+		}, TIMERS.FILE_CHANGE_DEBOUNCE_MS);
+
+		this.changeTimers.set(file.path, timer);
+	}
+
+	private async handleFileChange(file: TFile, cache: CachedMetadata) {
+		if (this.syncService.isWriting(file.path)) {
+			this.syncService.clearWritingGuard(file.path);
+			this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(cache.frontmatter));
 			return;
 		}
 
-		const currentFm = cache.frontmatter || {};
-
-		if (await this.enforceAliasFormatting(file, currentFm)) {
-			return;
-		}
+		const currentFm = (cache.frontmatter || {}) as Record<string, unknown>;
+		if (await this.syncService.enforceAliasFormatting(file, currentFm)) return;
 
 		const previousFm = this.prevFm.get(file.path) || {};
 
 		for (const group of this.settings.relationGroups) {
 			if (!group.enabled) continue;
 			for (const pair of group.pairs) {
-				for (const dir of this.getDirections(pair)) {
-					await this.processRelation(file, dir.from, dir.to, currentFm, previousFm);
+				for (const dir of this.syncService.getDirections(pair)) {
+					await this.syncService.processRelation(file, dir.from, dir.to, currentFm, previousFm);
 				}
 			}
 		}
 
-		this.prevFm.set(file.path, this.getTrackedFrontmatter(currentFm));
+		this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(currentFm));
 	}
 
-	// --- STRICT LINK PARSING & RESOLUTION ENGINE ---
+	private handleCreation(file: TAbstractFile) {
+		if (!this.vaultReady || !(file instanceof TFile) || file.extension !== "md" || file.basename.startsWith("Untitled")) return;
 
-	private async enforceAliasFormatting(file: TFile, fmData: any): Promise<boolean> {
-		if (!this.settings.formatting?.useAliasForPaths) return false;
+		this.newFilesQueue.add(file);
+		if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
 
-		let needsUpdate = false;
+		this.newFilesTimeoutId = window.setTimeout(() => {
+			void this.processNewFilesQueue();
+		}, TIMERS.NEW_FILE_QUEUE_DELAY_MS);
+	}
 
-		for (const group of this.settings.relationGroups) {
-			if (!group.enabled) continue;
-			for (const pair of group.pairs) {
-				if (!pair.enabled) continue;
+	private handleRename(file: TAbstractFile, oldPath: string) {
+		if (!this.vaultReady) return;
 
-				const keys = [pair.forward, pair.inverse].filter(Boolean);
-				for (const key of keys) {
-					const val = fmData[key];
-					if (!val) continue;
+		if (file instanceof TFile && file.extension === "md") {
+			const cachedFm = this.prevFm.get(oldPath);
+			if (cachedFm) {
+				this.prevFm.set(file.path, cachedFm);
+				this.prevFm.delete(oldPath);
+			}
 
-					const checkStr = (s: string) => {
-						const m = s.trim().match(/^\[\[(.*?)\]\]$/);
-						if (m && m[1].includes("/") && !m[1].includes("|")) {
-							needsUpdate = true;
-						}
-					};
-
-					if (Array.isArray(val)) {
-						val.forEach(checkStr);
-					} else if (typeof val === "string") {
-						val.split(",").forEach(checkStr);
-					}
+			if (this.settings.notifications.renameDetection && !file.basename.startsWith("Untitled")) {
+				this.handleCreation(file);
+			}
+		} else if (file instanceof TFolder) {
+			for (const [oldKey, cachedFm] of Array.from(this.prevFm.entries())) {
+				if (oldKey.startsWith(oldPath + "/")) {
+					this.prevFm.set(oldKey.replace(oldPath, file.path), cachedFm);
+					this.prevFm.delete(oldKey);
 				}
 			}
 		}
-
-		if (!needsUpdate) return false;
-
-		this.setWritingGuard(file.path);
-
-		try {
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				for (const group of this.settings.relationGroups) {
-					if (!group.enabled) continue;
-					for (const pair of group.pairs) {
-						if (!pair.enabled) continue;
-						const keys = [pair.forward, pair.inverse].filter(Boolean);
-						for (const key of keys) {
-							if (!fm[key]) continue;
-
-							const formatStr = (s: string) => {
-								const trimmed = s.trim();
-								const m = trimmed.match(/^\[\[(.*?)\]\]$/);
-								if (m && m[1].includes("/") && !m[1].includes("|")) {
-									const inner = m[1];
-									const basename = inner.split("/").pop()?.split("#")[0];
-									return `[[${inner}|${basename}]]`;
-								}
-								return trimmed;
-							};
-
-							if (Array.isArray(fm[key])) {
-								fm[key] = fm[key].map(formatStr);
-							} else if (typeof fm[key] === "string") {
-								fm[key] = fm[key].split(",").map(formatStr).join(", ");
-							}
-						}
-					}
-				}
-			});
-		} catch (error) {
-			this.clearWritingGuard(file.path);
-			console.error("Error auto-formatting aliases:", error);
-		}
-
-		return true;
 	}
 
-	private parseFrontmatterEntry(value: string): { isValid: boolean, target: string } {
-		const trimmed = value.trim();
-		if (!trimmed) return { isValid: false, target: "" };
-
-		const wikiMatch = trimmed.match(/^\[\[(.*?)\]\]$/);
-		if (wikiMatch) {
-			const cleanName = wikiMatch[1].split("|")[0].split("#")[0].trim();
-			return { isValid: true, target: cleanName };
-		}
-
-		const mdMatch = trimmed.match(/^\[(.*?)\]\((.*?)\)$/);
-		if (mdMatch) {
-			let linkPath = mdMatch[2];
-			linkPath = decodeURIComponent(linkPath).replace(/\.md$/i, "").split("#")[0].trim();
-			return { isValid: true, target: linkPath };
-		}
-
-		return { isValid: false, target: trimmed };
-	}
-
-	private extractLinks(value: any): { valid: string[], invalid: string[] } {
-		if (!value) return { valid: [], invalid: [] };
-		const arr = Array.isArray(value) ? value : [value];
-
-		const valid: string[] = [];
-		const invalid: string[] = [];
-
-		for (const item of arr) {
-			if (typeof item === "string") {
-				const parsed = this.parseFrontmatterEntry(item);
-				if (parsed.isValid && parsed.target) {
-					valid.push(parsed.target);
-				} else if (!parsed.isValid && parsed.target) {
-					invalid.push(parsed.target);
+	private handleDeletion(file: TAbstractFile) {
+		if (file instanceof TFile) {
+			this.prevFm.delete(file.path);
+			this.syncService.clearWritingGuard(file.path);
+			this.newFilesQueue.delete(file);
+			this.clearChangeTimer(file.path);
+		} else if (file instanceof TFolder) {
+			for (const key of Array.from(this.prevFm.keys())) {
+				if (key.startsWith(file.path + "/")) {
+					this.prevFm.delete(key);
+					this.syncService.clearWritingGuard(key);
+					this.clearChangeTimer(key);
 				}
 			}
 		}
-		return { valid, invalid };
 	}
 
-	private getResolvedLinks(value: any, sourcePath: string): { resolved: { raw: string, file: TFile | null }[], invalid: string[] } {
-		const links = this.extractLinks(value);
-		const resolved = links.valid.map(target => {
-			const file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
-			return { raw: target, file };
-		});
-		return { resolved, invalid: links.invalid };
-	}
-
-	// --- BULK SYNC ENGINE ---
-
-	async previewBulkSync(): Promise<PendingSync[]> {
-		const pending: PendingSync[] = [];
-		let iterations = 0;
-
-		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
-			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
-			if (!(sourceFile instanceof TFile)) continue;
-
-			if (++iterations % 100 === 0) {
-				await new Promise(resolve => setTimeout(resolve, 0));
-			}
-
-			for (const group of this.settings.relationGroups) {
-				if (!group.enabled) continue;
-
-				for (const pair of group.pairs) {
-					for (const dir of this.getDirections(pair)) {
-						const targets = this.getResolvedLinks(previousFm[dir.from], sourceFile.path);
-
-						for (const target of targets.resolved) {
-							if (target.file) {
-								const targetFm = this.prevFm.get(target.file.path) || {};
-								const backLinks = this.getResolvedLinks(targetFm[dir.to], target.file.path);
-
-								const hasBacklink = backLinks.resolved.some(r => r.file?.path === sourceFile.path);
-								if (!hasBacklink) {
-									pending.push({
-										sourceName: sourceFile.basename,
-										sourceFile: sourceFile,
-										targetFile: target.file,
-										inverseKey: dir.to
-									});
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		return pending;
-	}
-
-	async executeBulkSync(pending: PendingSync[]) {
-		for (const sync of pending) {
-			await this.modifyTargetNote(
-				sync.targetFile,
-				sync.sourceFile,
-				sync.inverseKey,
-				"add"
-			);
-		}
-		new Notice(`Bulk Sync Complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
-	}
-
-	// --- CORE LOGIC & NOTIFICATIONS ---
-
-	private async processRelation(file: TFile, key: string, inverseKey: string, currentFm: any, previousFm: any) {
-		const currentLinks = this.getResolvedLinks(currentFm[key], file.path);
-		const previousLinks = this.getResolvedLinks(previousFm[key], file.path);
-
-		const addedInvalid = currentLinks.invalid.filter(text => !previousLinks.invalid.includes(text));
-
-		if (this.settings.notifications.plainTextWarning) {
-			for (const text of addedInvalid) {
-				new Notice(`Relation Sync: "${text}" is plain text. Please use [[${text}]] in property '${key}' to sync.`);
-			}
-		}
-
-		const added = currentLinks.resolved.filter(curr => {
-			if (curr.file) {
-				return !previousLinks.resolved.some(prev => prev.file?.path === curr.file!.path);
-			} else {
-				return !previousLinks.resolved.some(prev => prev.raw === curr.raw);
-			}
-		});
-
-		const removed = previousLinks.resolved.filter(prev => {
-			if (prev.file) {
-				return !currentLinks.resolved.some(curr => curr.file?.path === prev.file!.path);
-			} else {
-				return !currentLinks.resolved.some(curr => curr.raw === prev.raw);
-			}
-		});
-
-		for (const item of added) {
-			await this.modifyTargetNote(item.file || item.raw, file, inverseKey, "add");
-		}
-
-		for (const item of removed) {
-			await this.modifyTargetNote(item.file || item.raw, file, inverseKey, "remove");
+	private clearChangeTimer(path: string) {
+		const changeTimer = this.changeTimers.get(path);
+		if (changeTimer) {
+			window.clearTimeout(changeTimer);
+			this.changeTimers.delete(path);
 		}
 	}
-
-	// --- FILE WRITING & PRESERVING YAML TYPES ---
-
-	private async modifyTargetNote(target: string | TFile, sourceFile: TFile, inverseKey: string, action: "add" | "remove") {
-		let targetFile: TFile | null = null;
-
-		if (target instanceof TFile) {
-			targetFile = target;
-		} else {
-			targetFile = this.app.metadataCache.getFirstLinkpathDest(target, sourceFile.path);
-		}
-
-		if (!(targetFile instanceof TFile)) {
-			if (typeof target === "string" && action === "add" && this.settings.notifications.ghostLinkWarning) {
-				new Notice(`Relation Sync: Note "${target}" does not exist yet.`);
-			}
-			return;
-		}
-
-		const linkText = this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
-		let sourceLink = `[[${linkText}]]`;
-
-		if (this.settings.formatting?.useAliasForPaths && linkText !== sourceFile.basename) {
-			sourceLink = `[[${linkText}|${sourceFile.basename}]]`;
-		}
-
-		this.setWritingGuard(targetFile.path);
-
-		try {
-			let didChange = false;
-
-			await this.app.fileManager.processFrontMatter(targetFile, (fm) => {
-				const existing = fm[inverseKey];
-				const existingArray = Array.isArray(existing) ? existing : (typeof existing === "string" && existing.trim() !== "" ? existing.split(",").map((s: string) => s.trim()) : []);
-
-				if (action === "add") {
-					let alreadyExists = false;
-					for (const rawLink of existingArray) {
-						if (typeof rawLink === "string") {
-							const parsed = this.parseFrontmatterEntry(rawLink);
-							if (parsed.isValid) {
-								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path);
-								if (dest && dest.path === sourceFile.path) {
-									alreadyExists = true;
-									break;
-								}
-							}
-						}
-					}
-
-					if (!alreadyExists) {
-						if (fm[inverseKey] === undefined || fm[inverseKey] === null) {
-							fm[inverseKey] = [sourceLink];
-						} else if (Array.isArray(fm[inverseKey])) {
-							fm[inverseKey].push(sourceLink);
-						} else if (typeof fm[inverseKey] === "string") {
-							fm[inverseKey] = fm[inverseKey].trim() === "" ? sourceLink : `${fm[inverseKey]}, ${sourceLink}`;
-						}
-						didChange = true;
-					}
-				}
-				else if (action === "remove") {
-					if (Array.isArray(fm[inverseKey])) {
-						const originalLength = fm[inverseKey].length;
-						fm[inverseKey] = fm[inverseKey].filter((rawLink: string) => {
-							const parsed = this.parseFrontmatterEntry(rawLink);
-							if (parsed.isValid) {
-								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path);
-								if (dest && dest.path === sourceFile.path) return false;
-							}
-							return rawLink !== sourceLink;
-						});
-						if (fm[inverseKey].length !== originalLength) didChange = true;
-					}
-					else if (typeof fm[inverseKey] === "string") {
-						const parsed = this.parseFrontmatterEntry(fm[inverseKey]);
-						let shouldRemove = false;
-						if (parsed.isValid) {
-							const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
-							if (dest && dest.path === sourceFile.path) shouldRemove = true;
-						}
-
-						if (shouldRemove) {
-							fm[inverseKey] = "";
-							didChange = true;
-						} else {
-							let cleanedStr = fm[inverseKey].replace(sourceLink, "");
-							cleanedStr = cleanedStr.replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
-							if (cleanedStr !== fm[inverseKey]) {
-								fm[inverseKey] = cleanedStr;
-								didChange = true;
-							}
-						}
-					}
-				}
-			});
-
-			if (didChange && this.settings.notifications.backgroundSync) {
-				new Notice(`Relation Sync: Updated background note "${targetFile.basename}"`);
-			}
-		} catch (error) {
-			this.clearWritingGuard(targetFile.path);
-			new Notice(`Error syncing to ${targetFile?.basename || target}`);
-			console.error(error);
-		}
-	}
-
-	// --- GHOST LINK QUEUE RESOLUTION ---
 
 	async processNewFilesQueue() {
 		if (!this.settings.notifications.ghostLinkPrompt) {
@@ -541,104 +178,48 @@ export default class CompassSyncPlugin extends Plugin {
 			for (const group of this.settings.relationGroups) {
 				if (!group.enabled) continue;
 				for (const pair of group.pairs) {
-					for (const dir of this.getDirections(pair)) {
-						const targets = this.extractLinks(previousFm[dir.from]);
+					for (const dir of this.syncService.getDirections(pair)) {
+						const targets = this.linkService.extractLinks(previousFm[dir.from]);
 
 						for (const newFile of filesToProcess) {
 							const isMatch = targets.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
-
-							if (isMatch) {
-								pendingSyncs.push({
-									sourceName: sourceFile.basename,
-									sourceFile,
-									targetFile: newFile,
-									inverseKey: dir.to
-								});
-							}
+							if (isMatch) pendingSyncs.push({ sourceName: sourceFile.basename, sourceFile, targetFile: newFile, inverseKey: dir.to });
 						}
 					}
 				}
 			}
 		}
 
-		if (pendingSyncs.length > 0) {
-			this.showUnifiedSyncPrompt(pendingSyncs, "new_files", filesToProcess.length);
-		}
+		if (pendingSyncs.length > 0) this.showUnifiedSyncPrompt(pendingSyncs, "new_files", filesToProcess.length);
 	}
 
 	private showUnifiedSyncPrompt(pendingSyncs: PendingSync[], context: "startup" | "new_files", fileCount: number = 0) {
 		const notice = new Notice("", 0);
 		notice.noticeEl.empty();
 
-		let message = "";
-		if (context === "startup") {
-			message = `Relation Sync: Startup scan found ${pendingSyncs.length} pending backlink(s).`;
-		} else {
-			const fileText = fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`;
-			message = `Relation Sync: Detected ${fileText} with ${pendingSyncs.length} pending backlink(s).`;
-		}
+		const message = context === "startup"
+			? `Relation Sync: Startup scan found ${pendingSyncs.length} pending backlink(s).`
+			: `Relation Sync: Detected ${fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`} with ${pendingSyncs.length} pending backlink(s).`;
 
-		notice.noticeEl.createDiv({
-			text: message,
-			attr: { style: "margin-bottom: 12px; font-weight: 500;" }
-		});
+		notice.noticeEl.createDiv({ text: message, attr: { style: "margin-bottom: 12px; font-weight: 500;" } });
 
-		const btnContainer = notice.noticeEl.createDiv({
-			attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" }
-		});
+		const btnContainer = notice.noticeEl.createDiv({ attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" } });
+		const syncBtn = btnContainer.createEl("button", { text: "Sync All", cls: "mod-cta" });
+		const ignoreBtn = btnContainer.createEl("button", { text: "Ignore All" });
 
-		const syncBtn = btnContainer.createEl("button", {
-			text: "Sync All",
-			cls: "mod-cta"
-		});
-
-		const ignoreBtn = btnContainer.createEl("button", {
-			text: "Ignore All"
-		});
-
-		ignoreBtn.onclick = () => {
-			notice.hide();
-		};
-
+		ignoreBtn.onclick = () => notice.hide();
 		syncBtn.onclick = async () => {
 			syncBtn.innerText = "Syncing...";
 			syncBtn.disabled = true;
 			ignoreBtn.disabled = true;
 
 			for (const sync of pendingSyncs) {
-				await this.modifyTargetNote(
-					sync.targetFile,
-					sync.sourceFile,
-					sync.inverseKey,
-					"add"
-				);
+				await this.syncService.modifyTargetNote(sync.targetFile, sync.sourceFile, sync.inverseKey, "add");
 			}
 
 			notice.hide();
-
-			if (this.settings.notifications.backgroundSync) {
-				new Notice(`Successfully synced ${pendingSyncs.length} relation(s)!`);
-			}
+			if (this.settings.notifications.backgroundSync) new Notice(`Successfully synced ${pendingSyncs.length} relation(s)!`);
 		};
-	}
-
-	// --- SAFETY HELPERS ---
-
-	private setWritingGuard(path: string) {
-		this.writingFiles.add(path);
-		const timer = window.setTimeout(() => {
-			this.clearWritingGuard(path);
-		}, 1000);
-		this.writingTimers.set(path, timer);
-	}
-
-	private clearWritingGuard(path: string) {
-		this.writingFiles.delete(path);
-		const timer = this.writingTimers.get(path);
-		if (timer) {
-			window.clearTimeout(timer);
-			this.writingTimers.delete(path);
-		}
 	}
 
 	async loadSettings() {
@@ -646,7 +227,6 @@ export default class CompassSyncPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 		this.settings.formatting = Object.assign({}, DEFAULT_SETTINGS.formatting, loadedData?.formatting);
-
 		if (!this.settings.relationGroups) this.settings.relationGroups = [];
 	}
 
