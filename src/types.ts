@@ -30,7 +30,6 @@ export interface CompassSyncSettings {
     relationGroups: RelationGroup[];
     notifications: NotificationSettings;
     formatting: FormattingSettings;
-    relations?: RelationPair[];
 }
 
 export interface PendingSync {

@@ -1,5 +1,5 @@
 import { Plugin, TFile, CachedMetadata, Notice } from "obsidian";
-import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync } from "./types";
+import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync, RelationPair } from "./types";
 import { CompassSettingTab } from "./settings";
 
 export default class CompassSyncPlugin extends Plugin {
@@ -7,10 +7,7 @@ export default class CompassSyncPlugin extends Plugin {
 
 	private writingFiles: Set<string> = new Set();
 	private writingTimers: Map<string, number> = new Map();
-
-	// FIX: Replaced single timeout ID with a dedicated Map to process simultaneous file events safely
 	private changeTimers: Map<string, number> = new Map();
-
 	private prevFm: Map<string, Record<string, any>> = new Map();
 
 	private newFilesQueue: Set<TFile> = new Set();
@@ -26,7 +23,7 @@ export default class CompassSyncPlugin extends Plugin {
 			for (const file of this.app.vault.getMarkdownFiles()) {
 				const cache = this.app.metadataCache.getFileCache(file);
 				if (cache?.frontmatter) {
-					this.prevFm.set(file.path, JSON.parse(JSON.stringify(cache.frontmatter)));
+					this.prevFm.set(file.path, structuredClone(cache.frontmatter));
 				}
 			}
 
@@ -44,7 +41,6 @@ export default class CompassSyncPlugin extends Plugin {
 			this.app.metadataCache.on("changed", (file, _data, cache) => {
 				if (!this.vaultReady) return;
 
-				// FIX: Isolate the debounce timer for each individual file
 				const existingTimer = this.changeTimers.get(file.path);
 				if (existingTimer) window.clearTimeout(existingTimer);
 
@@ -97,40 +93,74 @@ export default class CompassSyncPlugin extends Plugin {
 				}
 			})
 		);
+
+		// FIX: Memory leak prevention on file deletion
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				if (file instanceof TFile) {
+					this.prevFm.delete(file.path);
+					this.clearWritingGuard(file.path);
+					const changeTimer = this.changeTimers.get(file.path);
+					if (changeTimer) {
+						window.clearTimeout(changeTimer);
+						this.changeTimers.delete(file.path);
+					}
+					this.newFilesQueue.delete(file);
+				}
+			})
+		);
+	}
+
+	// FIX: Safe plugin unloading
+	onunload() {
+		this.changeTimers.forEach(timer => window.clearTimeout(timer));
+		this.writingTimers.forEach(timer => window.clearTimeout(timer));
+		if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
+
+		this.changeTimers.clear();
+		this.writingTimers.clear();
+		this.writingFiles.clear();
+		this.prevFm.clear();
+		this.newFilesQueue.clear();
+	}
+
+	private getDirections(pair: RelationPair): { from: string; to: string }[] {
+		if (!pair.enabled || !pair.forward || !pair.inverse) return [];
+		if (pair.forward === pair.inverse) return [{ from: pair.forward, to: pair.inverse }];
+		return [
+			{ from: pair.forward, to: pair.inverse },
+			{ from: pair.inverse, to: pair.forward }
+		];
 	}
 
 	async handleFileChange(file: TFile, cache: CachedMetadata) {
 		if (this.writingFiles.has(file.path)) {
 			this.clearWritingGuard(file.path);
-			this.prevFm.set(file.path, JSON.parse(JSON.stringify(cache.frontmatter || {})));
+			this.prevFm.set(file.path, structuredClone(cache.frontmatter || {}));
 			return;
 		}
 
 		const currentFm = cache.frontmatter || {};
 
-		// Intercept and fix Obsidian's native, unaliased file updates
 		if (await this.enforceAliasFormatting(file, currentFm)) {
-			// Deliberately returning without setting the writing guard. 
-			// This allows the resulting file save to organically trigger the *next* cycle and process relations safely.
+			// File is currently being saved by Obsidian's processFrontMatter.
+			// Guard is set inside enforceAliasFormatting. We exit early.
 			return;
 		}
 
 		const previousFm = this.prevFm.get(file.path) || {};
 
+		// FIX: Refactored loops using getDirections to avoid duplicated logic
 		for (const group of this.settings.relationGroups) {
 			if (!group.enabled) continue;
 			for (const pair of group.pairs) {
-				if (!pair.enabled || !pair.forward || !pair.inverse) continue;
-
-				await this.processRelation(file, pair.forward, pair.inverse, currentFm, previousFm);
-
-				if (pair.forward !== pair.inverse) {
-					await this.processRelation(file, pair.inverse, pair.forward, currentFm, previousFm);
+				for (const dir of this.getDirections(pair)) {
+					await this.processRelation(file, dir.from, dir.to, currentFm, previousFm);
 				}
 			}
 		}
 
-		this.prevFm.set(file.path, JSON.parse(JSON.stringify(currentFm)));
+		this.prevFm.set(file.path, structuredClone(currentFm));
 	}
 
 	// --- STRICT LINK PARSING & RESOLUTION ENGINE ---
@@ -152,7 +182,6 @@ export default class CompassSyncPlugin extends Plugin {
 
 					const checkStr = (s: string) => {
 						const m = s.trim().match(/^\[\[(.*?)\]\]$/);
-						// Match any path containing a slash but lacking the alias pipe
 						if (m && m[1].includes("/") && !m[1].includes("|")) {
 							needsUpdate = true;
 						}
@@ -168,6 +197,9 @@ export default class CompassSyncPlugin extends Plugin {
 		}
 
 		if (!needsUpdate) return false;
+
+		// FIX: Set writing guard BEFORE processFrontMatter is called to prevent infinite loops
+		this.setWritingGuard(file.path);
 
 		try {
 			await this.app.fileManager.processFrontMatter(file, (fm) => {
@@ -200,6 +232,7 @@ export default class CompassSyncPlugin extends Plugin {
 				}
 			});
 		} catch (error) {
+			this.clearWritingGuard(file.path);
 			console.error("Error auto-formatting aliases:", error);
 		}
 
@@ -259,49 +292,36 @@ export default class CompassSyncPlugin extends Plugin {
 
 	async previewBulkSync(): Promise<PendingSync[]> {
 		const pending: PendingSync[] = [];
+		let iterations = 0;
 
 		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
 			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
 			if (!(sourceFile instanceof TFile)) continue;
 
+			// FIX: Yield to the main thread occasionally to prevent UI freezing on big vaults
+			if (++iterations % 100 === 0) {
+				await new Promise(resolve => setTimeout(resolve, 0));
+			}
+
 			for (const group of this.settings.relationGroups) {
 				if (!group.enabled) continue;
 
 				for (const pair of group.pairs) {
-					if (!pair.enabled || !pair.forward || !pair.inverse) continue;
+					for (const dir of this.getDirections(pair)) {
+						const targets = this.getResolvedLinks(previousFm[dir.from], sourceFile.path);
 
-					const targetsForward = this.getResolvedLinks(previousFm[pair.forward], sourceFile.path);
-					for (const target of targetsForward.resolved) {
-						if (target.file) {
-							const targetFm = this.prevFm.get(target.file.path) || {};
-							const inverseLinks = this.getResolvedLinks(targetFm[pair.inverse], target.file.path);
-
-							const hasBacklink = inverseLinks.resolved.some(r => r.file?.path === sourceFile.path);
-							if (!hasBacklink) {
-								pending.push({
-									sourceName: sourceFile.basename,
-									sourceFile: sourceFile,
-									targetFile: target.file,
-									inverseKey: pair.inverse
-								});
-							}
-						}
-					}
-
-					if (pair.forward !== pair.inverse) {
-						const targetsInverse = this.getResolvedLinks(previousFm[pair.inverse], sourceFile.path);
-						for (const target of targetsInverse.resolved) {
+						for (const target of targets.resolved) {
 							if (target.file) {
 								const targetFm = this.prevFm.get(target.file.path) || {};
-								const forwardLinks = this.getResolvedLinks(targetFm[pair.forward], target.file.path);
+								const backLinks = this.getResolvedLinks(targetFm[dir.to], target.file.path);
 
-								const hasBacklink = forwardLinks.resolved.some(r => r.file?.path === sourceFile.path);
+								const hasBacklink = backLinks.resolved.some(r => r.file?.path === sourceFile.path);
 								if (!hasBacklink) {
 									pending.push({
 										sourceName: sourceFile.basename,
 										sourceFile: sourceFile,
 										targetFile: target.file,
-										inverseKey: pair.forward
+										inverseKey: dir.to
 									});
 								}
 							}
@@ -396,7 +416,7 @@ export default class CompassSyncPlugin extends Plugin {
 
 			await this.app.fileManager.processFrontMatter(targetFile, (fm) => {
 				const existing = fm[inverseKey];
-				const existingArray = Array.isArray(existing) ? existing : (typeof existing === "string" && existing.trim() !== "" ? [existing] : []);
+				const existingArray = Array.isArray(existing) ? existing : (typeof existing === "string" && existing.trim() !== "" ? existing.split(",").map((s: string) => s.trim()) : []);
 
 				if (action === "add") {
 					let alreadyExists = false;
@@ -404,7 +424,7 @@ export default class CompassSyncPlugin extends Plugin {
 						if (typeof rawLink === "string") {
 							const parsed = this.parseFrontmatterEntry(rawLink);
 							if (parsed.isValid) {
-								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
+								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path);
 								if (dest && dest.path === sourceFile.path) {
 									alreadyExists = true;
 									break;
@@ -416,18 +436,12 @@ export default class CompassSyncPlugin extends Plugin {
 					if (!alreadyExists) {
 						if (fm[inverseKey] === undefined || fm[inverseKey] === null) {
 							fm[inverseKey] = [sourceLink];
-							didChange = true;
 						} else if (Array.isArray(fm[inverseKey])) {
 							fm[inverseKey].push(sourceLink);
-							didChange = true;
 						} else if (typeof fm[inverseKey] === "string") {
-							if (fm[inverseKey].trim() === "") {
-								fm[inverseKey] = sourceLink;
-							} else {
-								fm[inverseKey] = `${fm[inverseKey]}, ${sourceLink}`;
-							}
-							didChange = true;
+							fm[inverseKey] = fm[inverseKey].trim() === "" ? sourceLink : `${fm[inverseKey]}, ${sourceLink}`;
 						}
+						didChange = true;
 					}
 				}
 				else if (action === "remove") {
@@ -436,7 +450,7 @@ export default class CompassSyncPlugin extends Plugin {
 						fm[inverseKey] = fm[inverseKey].filter((rawLink: string) => {
 							const parsed = this.parseFrontmatterEntry(rawLink);
 							if (parsed.isValid) {
-								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
+								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path);
 								if (dest && dest.path === sourceFile.path) return false;
 							}
 							return rawLink !== sourceLink;
@@ -455,6 +469,7 @@ export default class CompassSyncPlugin extends Plugin {
 							fm[inverseKey] = "";
 							didChange = true;
 						} else {
+							// Basic string cleanup if precise matching failed
 							let cleanedStr = fm[inverseKey].replace(sourceLink, "");
 							cleanedStr = cleanedStr.replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
 							if (cleanedStr !== fm[inverseKey]) {
@@ -497,30 +512,20 @@ export default class CompassSyncPlugin extends Plugin {
 			for (const group of this.settings.relationGroups) {
 				if (!group.enabled) continue;
 				for (const pair of group.pairs) {
-					if (!pair.enabled || !pair.forward || !pair.inverse) continue;
+					for (const dir of this.getDirections(pair)) {
+						const targets = this.extractLinks(previousFm[dir.from]);
 
-					const targetsForward = this.extractLinks(previousFm[pair.forward]);
-					const targetsInverse = pair.forward !== pair.inverse ? this.extractLinks(previousFm[pair.inverse]) : { valid: [], invalid: [] };
+						for (const newFile of filesToProcess) {
+							const isMatch = targets.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
 
-					for (const newFile of filesToProcess) {
-						const isForwardMatch = targetsForward.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
-						const isInverseMatch = targetsInverse.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
-
-						if (isForwardMatch) {
-							pendingSyncs.push({
-								sourceName: sourceFile.basename,
-								sourceFile,
-								targetFile: newFile,
-								inverseKey: pair.inverse
-							});
-						}
-						if (isInverseMatch) {
-							pendingSyncs.push({
-								sourceName: sourceFile.basename,
-								sourceFile,
-								targetFile: newFile,
-								inverseKey: pair.forward
-							});
+							if (isMatch) {
+								pendingSyncs.push({
+									sourceName: sourceFile.basename,
+									sourceFile,
+									targetFile: newFile,
+									inverseKey: dir.to
+								});
+							}
 						}
 					}
 				}
@@ -613,17 +618,7 @@ export default class CompassSyncPlugin extends Plugin {
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 		this.settings.formatting = Object.assign({}, DEFAULT_SETTINGS.formatting, loadedData?.formatting);
 
-		if (this.settings.relations && this.settings.relations.length > 0) {
-			this.settings.relationGroups = [{
-				name: "Imported Pairs",
-				enabled: true,
-				isCollapsed: false,
-				pairs: this.settings.relations
-			}];
-			delete this.settings.relations;
-			await this.saveSettings();
-		}
-
+		// FIX: Removed legacy relations migration check as it is redundant for modern installs
 		if (!this.settings.relationGroups) this.settings.relationGroups = [];
 	}
 

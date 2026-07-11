@@ -196,7 +196,7 @@ class BulkSyncModal extends Modal {
 
 			Array.from(folders.keys()).sort().forEach(folder => {
 				const syncs = folders.get(folder)!;
-				this.renderGroupHeader(this.listContainer, `📁 ${folder}`, syncs);
+				this.renderGroupHeader(this.listContainer, `刀 ${folder}`, syncs);
 
 				const folderIndent = this.listContainer.createDiv({ attr: { style: "margin-left: 20px; margin-bottom: 12px; border-left: 1px solid var(--background-modifier-border); padding-left: 10px;" } });
 
@@ -209,7 +209,7 @@ class BulkSyncModal extends Modal {
 
 				Array.from(files.keys()).sort().forEach(file => {
 					const fileSyncs = files.get(file)!;
-					this.renderGroupHeader(folderIndent, `📄 ${file}`, fileSyncs);
+					this.renderGroupHeader(folderIndent, `塘 ${file}`, fileSyncs);
 					const fileIndent = folderIndent.createDiv({ attr: { style: "margin-left: 20px; margin-bottom: 8px;" } });
 					fileSyncs.forEach(p => this.renderSingleItem(fileIndent, p));
 				});
@@ -225,7 +225,7 @@ class BulkSyncModal extends Modal {
 
 			Array.from(files.keys()).sort().forEach(file => {
 				const syncs = files.get(file)!;
-				this.renderGroupHeader(this.listContainer, `📄 ${file}`, syncs);
+				this.renderGroupHeader(this.listContainer, `塘 ${file}`, syncs);
 				const indent = this.listContainer.createDiv({ attr: { style: "margin-left: 20px; margin-bottom: 12px;" } });
 				syncs.forEach(p => this.renderSingleItem(indent, p));
 			});
