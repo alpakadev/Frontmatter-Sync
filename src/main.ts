@@ -7,7 +7,10 @@ export default class CompassSyncPlugin extends Plugin {
 
 	private writingFiles: Set<string> = new Set();
 	private writingTimers: Map<string, number> = new Map();
-	private timeoutId: number | null = null;
+
+	// FIX: Replaced single timeout ID with a dedicated Map to process simultaneous file events safely
+	private changeTimers: Map<string, number> = new Map();
+
 	private prevFm: Map<string, Record<string, any>> = new Map();
 
 	private newFilesQueue: Set<TFile> = new Set();
@@ -41,10 +44,16 @@ export default class CompassSyncPlugin extends Plugin {
 			this.app.metadataCache.on("changed", (file, _data, cache) => {
 				if (!this.vaultReady) return;
 
-				if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
-				this.timeoutId = window.setTimeout(() => {
+				// FIX: Isolate the debounce timer for each individual file
+				const existingTimer = this.changeTimers.get(file.path);
+				if (existingTimer) window.clearTimeout(existingTimer);
+
+				const timer = window.setTimeout(() => {
+					this.changeTimers.delete(file.path);
 					void this.handleFileChange(file, cache);
 				}, 300);
+
+				this.changeTimers.set(file.path, timer);
 			})
 		);
 
@@ -101,7 +110,8 @@ export default class CompassSyncPlugin extends Plugin {
 
 		// Intercept and fix Obsidian's native, unaliased file updates
 		if (await this.enforceAliasFormatting(file, currentFm)) {
-			// If we formatted it, it will trigger a new changed event. We abort here to prevent duplicate processing.
+			// Deliberately returning without setting the writing guard. 
+			// This allows the resulting file save to organically trigger the *next* cycle and process relations safely.
 			return;
 		}
 
