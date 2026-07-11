@@ -5,6 +5,7 @@ export interface NotificationSettings {
     plainTextWarning: boolean;
     ghostLinkWarning: boolean;
     ghostLinkPrompt: boolean;
+    checkOnStartup: boolean;
 }
 
 export interface RelationPair {
@@ -46,6 +47,7 @@ export const DEFAULT_SETTINGS: CompassSyncSettings = {
         backgroundSync: true,
         plainTextWarning: true,
         ghostLinkWarning: true,
-        ghostLinkPrompt: true
+        ghostLinkPrompt: true,
+        checkOnStartup: false
     }
 };

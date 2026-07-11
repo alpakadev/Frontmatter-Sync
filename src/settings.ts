@@ -325,6 +325,17 @@ export class CompassSettingTab extends PluginSettingTab {
 		containerEl.createEl("h3", { text: "Notifications" });
 
 		new Setting(containerEl)
+			.setName("Check files on startup")
+			.setDesc("Scan the vault for missing bidirectional links automatically when Obsidian starts.")
+			.addToggle((toggle) => toggle
+				.setValue(this.plugin.settings.notifications.checkOnStartup)
+				.onChange(async (value) => {
+					this.plugin.settings.notifications.checkOnStartup = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
 			.setName("Background sync success")
 			.setDesc("Show a popup when a target note is updated in the background.")
 			.addToggle((toggle) => toggle

@@ -13,21 +13,37 @@ export default class CompassSyncPlugin extends Plugin {
 	private newFilesQueue: Set<TFile> = new Set();
 	private newFilesTimeoutId: number | null = null;
 
+	// FIX: Added flag to prevent startup event bursts
+	private vaultReady: boolean = false;
+
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new CompassSettingTab(this.app, this));
 
-		this.app.workspace.onLayoutReady(() => {
+		this.app.workspace.onLayoutReady(async () => {
 			for (const file of this.app.vault.getMarkdownFiles()) {
 				const cache = this.app.metadataCache.getFileCache(file);
 				if (cache?.frontmatter) {
 					this.prevFm.set(file.path, JSON.parse(JSON.stringify(cache.frontmatter)));
 				}
 			}
+
+			// Vault has finished initializing
+			this.vaultReady = true;
+
+			// NEW FEATURE: Explicit startup check
+			if (this.settings.notifications.checkOnStartup) {
+				const pending = await this.previewBulkSync();
+				if (pending.length > 0) {
+					this.showUnifiedSyncPrompt(pending, "startup");
+				}
+			}
 		});
 
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file, _data, cache) => {
+				if (!this.vaultReady) return; // Prevent caching bursts on startup
+
 				if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
 				this.timeoutId = window.setTimeout(() => {
 					void this.handleFileChange(file, cache);
@@ -37,6 +53,8 @@ export default class CompassSyncPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
+				if (!this.vaultReady) return; // Prevent queuing the entire vault on startup
+
 				if (file instanceof TFile && file.extension === "md") {
 					this.newFilesQueue.add(file);
 
@@ -294,7 +312,8 @@ export default class CompassSyncPlugin extends Plugin {
 		this.newFilesQueue.clear();
 		if (filesToProcess.length === 0) return;
 
-		const pendingSyncs: { targetFile: TFile, sourceFile: TFile; inverseKey: string }[] = [];
+		// Matched structure to strictly adhere to PendingSync interface
+		const pendingSyncs: PendingSync[] = [];
 
 		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
 			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
@@ -310,10 +329,20 @@ export default class CompassSyncPlugin extends Plugin {
 
 					for (const newFile of filesToProcess) {
 						if (targetsForward.valid.includes(newFile.basename)) {
-							pendingSyncs.push({ targetFile: newFile, sourceFile, inverseKey: pair.inverse });
+							pendingSyncs.push({
+								sourceName: sourceFile.basename,
+								sourceFile,
+								targetFile: newFile,
+								inverseKey: pair.inverse
+							});
 						}
 						if (targetsInverse.valid.includes(newFile.basename)) {
-							pendingSyncs.push({ targetFile: newFile, sourceFile, inverseKey: pair.forward });
+							pendingSyncs.push({
+								sourceName: sourceFile.basename,
+								sourceFile,
+								targetFile: newFile,
+								inverseKey: pair.forward
+							});
 						}
 					}
 				}
@@ -321,18 +350,24 @@ export default class CompassSyncPlugin extends Plugin {
 		}
 
 		if (pendingSyncs.length > 0) {
-			this.showUnifiedSyncPrompt(pendingSyncs, filesToProcess.length);
+			this.showUnifiedSyncPrompt(pendingSyncs, "new_files", filesToProcess.length);
 		}
 	}
 
-	private showUnifiedSyncPrompt(pendingSyncs: any[], fileCount: number) {
+	private showUnifiedSyncPrompt(pendingSyncs: PendingSync[], context: "startup" | "new_files", fileCount: number = 0) {
 		const notice = new Notice("", 0);
 		notice.noticeEl.empty();
 
-		const fileText = fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`;
+		let message = "";
+		if (context === "startup") {
+			message = `Relation Sync: Startup scan found ${pendingSyncs.length} pending backlink(s).`;
+		} else {
+			const fileText = fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`;
+			message = `Relation Sync: Detected ${fileText} with ${pendingSyncs.length} pending backlink(s).`;
+		}
 
 		notice.noticeEl.createDiv({
-			text: `Relation Sync: Detected ${fileText} with ${pendingSyncs.length} pending backlink(s).`,
+			text: message,
 			attr: { style: "margin-bottom: 12px; font-weight: 500;" }
 		});
 
@@ -362,7 +397,7 @@ export default class CompassSyncPlugin extends Plugin {
 				await this.modifyTargetNote(
 					sync.targetFile.basename,
 					sync.sourceFile,
-					sync.sourceFile.basename,
+					sync.sourceName,
 					sync.inverseKey,
 					"add"
 				);
