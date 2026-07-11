@@ -13,7 +13,6 @@ export default class CompassSyncPlugin extends Plugin {
 	private newFilesQueue: Set<TFile> = new Set();
 	private newFilesTimeoutId: number | null = null;
 
-	// FIX: Added flag to prevent startup event bursts
 	private vaultReady: boolean = false;
 
 	async onload() {
@@ -28,10 +27,8 @@ export default class CompassSyncPlugin extends Plugin {
 				}
 			}
 
-			// Vault has finished initializing
 			this.vaultReady = true;
 
-			// NEW FEATURE: Explicit startup check
 			if (this.settings.notifications.checkOnStartup) {
 				const pending = await this.previewBulkSync();
 				if (pending.length > 0) {
@@ -42,7 +39,7 @@ export default class CompassSyncPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file, _data, cache) => {
-				if (!this.vaultReady) return; // Prevent caching bursts on startup
+				if (!this.vaultReady) return;
 
 				if (this.timeoutId !== null) window.clearTimeout(this.timeoutId);
 				this.timeoutId = window.setTimeout(() => {
@@ -53,9 +50,42 @@ export default class CompassSyncPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
-				if (!this.vaultReady) return; // Prevent queuing the entire vault on startup
+				if (!this.vaultReady) return;
 
 				if (file instanceof TFile && file.extension === "md") {
+					// Ignore temporary Obsidian creation states
+					if (file.basename.startsWith("Untitled")) return;
+
+					this.newFilesQueue.add(file);
+
+					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
+					this.newFilesTimeoutId = window.setTimeout(() => {
+						void this.processNewFilesQueue();
+					}, 2000);
+				}
+			})
+		);
+
+		// NEW FEATURE: Rename Detection
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) => {
+				if (!this.vaultReady) return;
+
+				if (file instanceof TFile && file.extension === "md") {
+					// 1. Keep the frontmatter cache strictly synchronized with the new file path
+					const cachedFm = this.prevFm.get(oldPath);
+					if (cachedFm) {
+						this.prevFm.set(file.path, cachedFm);
+						this.prevFm.delete(oldPath);
+					}
+
+					// 2. Setting Guard
+					if (!this.settings.notifications.renameDetection) return;
+
+					// 3. Edge Case Guard: Still essentially "Untitled"
+					if (file.basename.startsWith("Untitled")) return;
+
+					// 4. Feed into the existing Queue logic
 					this.newFilesQueue.add(file);
 
 					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
@@ -312,7 +342,6 @@ export default class CompassSyncPlugin extends Plugin {
 		this.newFilesQueue.clear();
 		if (filesToProcess.length === 0) return;
 
-		// Matched structure to strictly adhere to PendingSync interface
 		const pendingSyncs: PendingSync[] = [];
 
 		for (const [sourcePath, previousFm] of this.prevFm.entries()) {

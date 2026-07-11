@@ -284,7 +284,6 @@ export class CompassSettingTab extends PluginSettingTab {
 	private draggedGroupIndex: number | null = null;
 	private draggedPairData: { groupIndex: number, pairIndex: number } | null = null;
 
-	// Track newly created pairs for autofocus
 	private focusTarget: { groupIndex: number, pairIndex: number } | null = null;
 
 	constructor(app: App, plugin: CompassSyncPlugin) {
@@ -375,6 +374,17 @@ export class CompassSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.notifications.ghostLinkPrompt)
 				.onChange(async (value) => {
 					this.plugin.settings.notifications.ghostLinkPrompt = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Rename detection")
+			.setDesc("Detect when you rename a file to match an existing missing link and prompt to sync.")
+			.addToggle((toggle) => toggle
+				.setValue(this.plugin.settings.notifications.renameDetection)
+				.onChange(async (value) => {
+					this.plugin.settings.notifications.renameDetection = value;
 					await this.plugin.saveSettings();
 				})
 			);
@@ -582,7 +592,6 @@ export class CompassSettingTab extends PluginSettingTab {
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
 						group.isCollapsed = false;
 
-						// Focus the newly created pair
 						this.focusTarget = { groupIndex, pairIndex: group.pairs.length - 1 };
 						await this.plugin.saveSettings();
 						this.refresh();
@@ -686,11 +695,10 @@ export class CompassSettingTab extends PluginSettingTab {
 					inverseInput.style.width = "100%";
 				}
 
-				// --- UX FIX: Auto-Focus the new input field ---
 				if (this.focusTarget && this.focusTarget.groupIndex === groupIndex && this.focusTarget.pairIndex === pairIndex) {
 					window.setTimeout(() => {
 						forwardInput?.focus();
-					}, 20); // Small tick to ensure DOM is fully attached
+					}, 20);
 					this.focusTarget = null;
 				}
 
@@ -753,9 +761,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				if (forwardInput && inverseInput) {
 					new PropertySuggest(this.app, forwardInput, keysArray, inverseInput);
 
-					// --- UX FIX: Add new pair on Enter ---
 					new PropertySuggest(this.app, inverseInput, keysArray, undefined, async () => {
-						// Safety guard: Don't spawn a new pair if the current one is completely empty
 						if (!pair.forward && !pair.inverse) return;
 
 						group.pairs.push({ forward: "", inverse: "", enabled: true });
