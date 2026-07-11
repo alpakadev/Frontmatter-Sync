@@ -251,7 +251,6 @@ export default class CompassSyncPlugin extends Plugin {
 			}
 		}
 
-		// Strictly compare underlying file paths to bypass format differences (e.g. [[file]] vs [[folder/file]])
 		const added = currentLinks.resolved.filter(curr => {
 			if (curr.file) {
 				return !previousLinks.resolved.some(prev => prev.file?.path === curr.file!.path);
@@ -299,7 +298,8 @@ export default class CompassSyncPlugin extends Plugin {
 		const linkText = this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
 		let sourceLink = `[[${linkText}]]`;
 
-		if (this.settings.formatting?.useAliasForPaths && linkText.includes("/")) {
+		// Fix: Check strictly against the basename to guarantee OS-agnostic alias appending
+		if (this.settings.formatting?.useAliasForPaths && linkText !== sourceFile.basename) {
 			sourceLink = `[[${linkText}|${sourceFile.basename}]]`;
 		}
 		// ----------------------------------
@@ -352,7 +352,6 @@ export default class CompassSyncPlugin extends Plugin {
 							const parsed = this.parseFrontmatterEntry(rawLink);
 							if (parsed.isValid) {
 								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
-								// If the path strictly matches, remove it, regardless of its visual format
 								if (dest && dest.path === sourceFile.path) return false;
 							}
 							return rawLink !== sourceLink;
@@ -419,7 +418,6 @@ export default class CompassSyncPlugin extends Plugin {
 					const targetsInverse = pair.forward !== pair.inverse ? this.extractLinks(previousFm[pair.inverse]) : { valid: [], invalid: [] };
 
 					for (const newFile of filesToProcess) {
-						// Match if exact raw string matches OR if it resolves to the new file's path
 						const isForwardMatch = targetsForward.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
 						const isInverseMatch = targetsInverse.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
 
