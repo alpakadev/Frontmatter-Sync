@@ -53,7 +53,6 @@ export default class CompassSyncPlugin extends Plugin {
 				if (!this.vaultReady) return;
 
 				if (file instanceof TFile && file.extension === "md") {
-					// Ignore temporary Obsidian creation states
 					if (file.basename.startsWith("Untitled")) return;
 
 					this.newFilesQueue.add(file);
@@ -66,26 +65,21 @@ export default class CompassSyncPlugin extends Plugin {
 			})
 		);
 
-		// NEW FEATURE: Rename Detection
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				if (!this.vaultReady) return;
 
 				if (file instanceof TFile && file.extension === "md") {
-					// 1. Keep the frontmatter cache strictly synchronized with the new file path
 					const cachedFm = this.prevFm.get(oldPath);
 					if (cachedFm) {
 						this.prevFm.set(file.path, cachedFm);
 						this.prevFm.delete(oldPath);
 					}
 
-					// 2. Setting Guard
 					if (!this.settings.notifications.renameDetection) return;
 
-					// 3. Edge Case Guard: Still essentially "Untitled"
 					if (file.basename.startsWith("Untitled")) return;
 
-					// 4. Feed into the existing Queue logic
 					this.newFilesQueue.add(file);
 
 					if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
@@ -186,7 +180,7 @@ export default class CompassSyncPlugin extends Plugin {
 	async executeBulkSync(pending: PendingSync[]) {
 		for (const sync of pending) {
 			await this.modifyTargetNote(
-				sync.targetFile.basename,
+				sync.targetFile,
 				sync.sourceFile,
 				sync.sourceName,
 				sync.inverseKey,
@@ -266,12 +260,18 @@ export default class CompassSyncPlugin extends Plugin {
 
 	// --- FILE WRITING & PRESERVING YAML TYPES ---
 
-	private async modifyTargetNote(targetName: string, sourceFile: TFile, sourceNoteName: string, inverseKey: string, action: "add" | "remove") {
-		const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
+	private async modifyTargetNote(target: string | TFile, sourceFile: TFile, sourceNoteName: string, inverseKey: string, action: "add" | "remove") {
+		let targetFile: TFile | null = null;
+
+		if (target instanceof TFile) {
+			targetFile = target;
+		} else {
+			targetFile = this.app.metadataCache.getFirstLinkpathDest(target, sourceFile.path);
+		}
 
 		if (!(targetFile instanceof TFile)) {
-			if (action === "add" && this.settings.notifications.ghostLinkWarning) {
-				new Notice(`Relation Sync: Note "${targetName}" does not exist yet.`);
+			if (typeof target === "string" && action === "add" && this.settings.notifications.ghostLinkWarning) {
+				new Notice(`Relation Sync: Note "${target}" does not exist yet.`);
 			}
 			return;
 		}
@@ -325,7 +325,7 @@ export default class CompassSyncPlugin extends Plugin {
 			}
 		} catch (error) {
 			this.clearWritingGuard(targetFile.path);
-			new Notice(`Error syncing to ${targetFile.basename}`);
+			new Notice(`Error syncing to ${targetFile?.basename || target}`);
 			console.error(error);
 		}
 	}
@@ -424,7 +424,7 @@ export default class CompassSyncPlugin extends Plugin {
 
 			for (const sync of pendingSyncs) {
 				await this.modifyTargetNote(
-					sync.targetFile.basename,
+					sync.targetFile,
 					sync.sourceFile,
 					sync.sourceName,
 					sync.inverseKey,
