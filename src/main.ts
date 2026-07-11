@@ -39,6 +39,10 @@ export default class CompassSyncPlugin extends Plugin {
 		this.newFilesQueue.clear();
 	}
 
+	public getFrontmatterCache(): Map<string, Record<string, unknown>> {
+		return this.prevFm;
+	}
+
 	private async initializeCache() {
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
@@ -63,7 +67,12 @@ export default class CompassSyncPlugin extends Plugin {
 	}
 
 	private debounceFileChange(file: TFile, cache: CachedMetadata) {
-		if (!this.vaultReady) return;
+		if (!this.vaultReady) {
+			if (cache?.frontmatter) {
+				this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(cache.frontmatter));
+			}
+			return;
+		}
 
 		const existingTimer = this.changeTimers.get(file.path);
 		if (existingTimer) window.clearTimeout(existingTimer);
@@ -77,13 +86,16 @@ export default class CompassSyncPlugin extends Plugin {
 	}
 
 	private async handleFileChange(file: TFile, cache: CachedMetadata) {
+		const currentFm = (cache.frontmatter || {}) as Record<string, unknown>;
+
 		if (this.syncService.isWriting(file.path)) {
-			this.syncService.clearWritingGuard(file.path);
-			this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(cache.frontmatter));
-			return;
+			if (this.syncService.matchesExpectedState(file.path, currentFm)) {
+				this.syncService.clearWritingGuard(file.path);
+			} else {
+				return; // Intermediate write state, abort and wait for exact match.
+			}
 		}
 
-		const currentFm = (cache.frontmatter || {}) as Record<string, unknown>;
 		if (await this.syncService.enforceAliasFormatting(file, currentFm)) return;
 
 		const previousFm = this.prevFm.get(file.path) || {};

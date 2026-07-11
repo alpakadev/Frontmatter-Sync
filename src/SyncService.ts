@@ -5,6 +5,7 @@ import { TIMERS, REGEX } from "./constants";
 
 export class SyncService {
     private writingFiles = new Set<string>();
+    private expectedStates = new Map<string, string>();
     private writingTimers = new Map<string, number>();
 
     constructor(
@@ -13,20 +14,30 @@ export class SyncService {
         private linkService: LinkService
     ) { }
 
-    // --- WRITING GUARDS ---
+    // --- WRITING GUARDS & STATE TRACKING ---
 
     public isWriting(path: string): boolean {
         return this.writingFiles.has(path);
     }
 
-    public setWritingGuard(path: string) {
+    public matchesExpectedState(path: string, currentFm: Record<string, unknown> | null | undefined): boolean {
+        if (!this.expectedStates.has(path)) return false;
+        const expected = this.expectedStates.get(path);
+        const current = JSON.stringify(this.getTrackedFrontmatter(currentFm));
+        return expected === current;
+    }
+
+    private setWritingGuard(path: string, resultingFm: Record<string, unknown>) {
         this.writingFiles.add(path);
-        const timer = window.setTimeout(() => this.clearWritingGuard(path), TIMERS.WRITING_GUARD_MS);
+        this.expectedStates.set(path, JSON.stringify(this.getTrackedFrontmatter(resultingFm)));
+
+        const timer = window.setTimeout(() => this.clearWritingGuard(path), TIMERS.WRITING_GUARD_FALLBACK_MS);
         this.writingTimers.set(path, timer);
     }
 
     public clearWritingGuard(path: string) {
         this.writingFiles.delete(path);
+        this.expectedStates.delete(path);
         const timer = this.writingTimers.get(path);
         if (timer) {
             window.clearTimeout(timer);
@@ -37,6 +48,7 @@ export class SyncService {
     public clearAllGuards() {
         this.writingTimers.forEach(timer => window.clearTimeout(timer));
         this.writingTimers.clear();
+        this.expectedStates.clear();
         this.writingFiles.clear();
     }
 
@@ -72,25 +84,24 @@ export class SyncService {
         if (!this.settings.formatting?.useAliasForPaths) return false;
 
         let needsUpdate = false;
-        const checkStr = (s: string) => {
-            const m = s.trim().match(REGEX.WIKI_LINK);
-            if (m && m[1].includes("/") && !m[1].includes("|")) needsUpdate = true;
+        const checkNeedsUpdate = (s: string) => {
+            const matches = s.match(REGEX.WIKI_LINK_GLOBAL);
+            if (matches && matches.some(m => m.includes("/"))) needsUpdate = true;
         };
 
         for (const group of this.settings.relationGroups) {
             if (!group.enabled) continue;
             for (const pair of group.pairs) {
                 if (!pair.enabled) continue;
-
                 const keys = [pair.forward, pair.inverse].filter(Boolean);
                 for (const key of keys) {
                     const val = fmData[key];
                     if (!val) continue;
 
                     if (Array.isArray(val)) {
-                        val.forEach(v => typeof v === "string" && checkStr(v));
+                        val.forEach(v => typeof v === "string" && checkNeedsUpdate(v));
                     } else if (typeof val === "string") {
-                        val.split(",").forEach(checkStr);
+                        checkNeedsUpdate(val);
                     }
                 }
             }
@@ -98,8 +109,8 @@ export class SyncService {
 
         if (!needsUpdate) return false;
 
-        this.setWritingGuard(file.path);
         try {
+            let resultingFm: Record<string, unknown> = {};
             await this.app.fileManager.processFrontMatter(file, (fm) => {
                 for (const group of this.settings.relationGroups) {
                     if (!group.enabled) continue;
@@ -110,27 +121,27 @@ export class SyncService {
                             if (!fm[key]) continue;
 
                             const formatStr = (s: string) => {
-                                const trimmed = s.trim();
-                                const m = trimmed.match(REGEX.WIKI_LINK);
-                                if (m && m[1].includes("/") && !m[1].includes("|")) {
-                                    const inner = m[1];
-                                    const basename = inner.split("/").pop()?.split("#")[0];
-                                    return `[[${inner}|${basename}]]`;
-                                }
-                                return trimmed;
+                                return s.replace(REGEX.WIKI_LINK_GLOBAL, (match, inner) => {
+                                    if (inner.includes("/")) {
+                                        const basename = inner.split("/").pop()?.split("#")[0];
+                                        return `[[${inner}|${basename}]]`;
+                                    }
+                                    return match;
+                                });
                             };
 
                             if (Array.isArray(fm[key])) {
-                                fm[key] = fm[key].map(formatStr);
+                                fm[key] = fm[key].map(v => typeof v === "string" ? formatStr(v) : v);
                             } else if (typeof fm[key] === "string") {
-                                fm[key] = fm[key].split(",").map(formatStr).join(", ");
+                                fm[key] = formatStr(fm[key]);
                             }
                         }
                     }
                 }
+                resultingFm = structuredClone(fm);
             });
+            this.setWritingGuard(file.path, resultingFm);
         } catch (error) {
-            this.clearWritingGuard(file.path);
             console.error("Error auto-formatting aliases:", error);
         }
         return true;
@@ -169,7 +180,7 @@ export class SyncService {
     }
 
     public async modifyTargetNote(target: string | TFile, sourceFile: TFile, inverseKey: string, action: "add" | "remove") {
-        let targetFile: TFile | null = target instanceof TFile ? target : this.app.metadataCache.getFirstLinkpathDest(target, sourceFile.path);
+        const targetFile: TFile | null = target instanceof TFile ? target : this.app.metadataCache.getFirstLinkpathDest(target, sourceFile.path);
 
         if (!(targetFile instanceof TFile)) {
             if (typeof target === "string" && action === "add" && this.settings.notifications.ghostLinkWarning) {
@@ -184,10 +195,10 @@ export class SyncService {
             sourceLink = `[[${linkText}|${sourceFile.basename}]]`;
         }
 
-        this.setWritingGuard(targetFile.path);
-
         try {
             let didChange = false;
+            let resultingFm: Record<string, unknown> = {};
+
             await this.app.fileManager.processFrontMatter(targetFile, (fm) => {
                 const existing = fm[inverseKey];
                 const existingArray = Array.isArray(existing)
@@ -195,23 +206,34 @@ export class SyncService {
                     : (typeof existing === "string" && existing.trim() !== "" ? existing.split(",").map((s: string) => s.trim()) : []);
 
                 if (action === "add") {
-                    const alreadyExists = existingArray.some((rawLink: string) => {
+                    const alreadyExists = existingArray.some((rawLink: unknown) => {
+                        if (typeof rawLink !== "string") return false;
                         const parsed = this.linkService.parseFrontmatterEntry(rawLink);
-                        return parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path)?.path === sourceFile.path;
+                        return parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path)?.path === sourceFile.path;
                     });
 
                     if (!alreadyExists) {
-                        if (fm[inverseKey] === undefined || fm[inverseKey] === null) fm[inverseKey] = [sourceLink];
-                        else if (Array.isArray(fm[inverseKey])) fm[inverseKey].push(sourceLink);
-                        else if (typeof fm[inverseKey] === "string") fm[inverseKey] = fm[inverseKey].trim() === "" ? sourceLink : `${fm[inverseKey]}, ${sourceLink}`;
+                        if (fm[inverseKey] === undefined || fm[inverseKey] === null) {
+                            fm[inverseKey] = [sourceLink];
+                        } else if (Array.isArray(fm[inverseKey])) {
+                            fm[inverseKey].push(sourceLink);
+                        } else if (typeof fm[inverseKey] === "string") {
+                            // Upgrade raw strings to proper Obsidian arrays to prevent Properties UI corruption
+                            if (fm[inverseKey].trim() === "") {
+                                fm[inverseKey] = sourceLink;
+                            } else {
+                                fm[inverseKey] = [fm[inverseKey], sourceLink];
+                            }
+                        }
                         didChange = true;
                     }
                 } else if (action === "remove") {
                     if (Array.isArray(fm[inverseKey])) {
                         const originalLength = fm[inverseKey].length;
-                        fm[inverseKey] = fm[inverseKey].filter((rawLink: string) => {
+                        fm[inverseKey] = fm[inverseKey].filter((rawLink: unknown) => {
+                            if (typeof rawLink !== "string") return true;
                             const parsed = this.linkService.parseFrontmatterEntry(rawLink);
-                            if (parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path)?.path === sourceFile.path) {
+                            if (parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path)?.path === sourceFile.path) {
                                 return false;
                             }
                             return rawLink !== sourceLink;
@@ -219,22 +241,25 @@ export class SyncService {
                         if (fm[inverseKey].length !== originalLength) didChange = true;
                     } else if (typeof fm[inverseKey] === "string") {
                         const parsed = this.linkService.parseFrontmatterEntry(fm[inverseKey]);
-                        if (parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile!.path)?.path === sourceFile.path) {
+                        if (parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path)?.path === sourceFile.path) {
                             fm[inverseKey] = "";
                             didChange = true;
                         } else {
-                            let cleanedStr = fm[inverseKey].replace(sourceLink, "").replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
-                            if (cleanedStr !== fm[inverseKey]) {
-                                fm[inverseKey] = cleanedStr;
+                            if (fm[inverseKey].includes(sourceLink)) {
+                                fm[inverseKey] = fm[inverseKey].replace(sourceLink, "").replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
                                 didChange = true;
                             }
                         }
                     }
                 }
+                resultingFm = structuredClone(fm);
             });
 
-            if (didChange && this.settings.notifications.backgroundSync) {
-                new Notice(`Relation Sync: Updated background note "${targetFile.basename}"`);
+            if (didChange) {
+                this.setWritingGuard(targetFile.path, resultingFm);
+                if (this.settings.notifications.backgroundSync) {
+                    new Notice(`Relation Sync: Updated background note "${targetFile.basename}"`);
+                }
             }
         } catch (error) {
             this.clearWritingGuard(targetFile.path);

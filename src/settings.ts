@@ -157,9 +157,10 @@ class BulkSyncModal extends Modal {
 	}
 
 	private renderList() {
+		// Save scroll position to prevent UI thrashing on checkbox toggle
+		const scrollPos = this.listContainer?.scrollTop || 0;
 		this.listContainer.empty();
-		// Omitted complex renderList logic for brevity, assuming standard implementation identical to source.
-		// (Restored purely as identical to original logic to ensure 'complete file' requirement)
+
 		if (this.viewMode === "folder") {
 			const folders = new Map<string, PendingSync[]>();
 			this.pending.forEach(p => {
@@ -207,6 +208,9 @@ class BulkSyncModal extends Modal {
 			this.applyBtn.innerText = `Apply ${this.selected.size} Changes`;
 			this.applyBtn.disabled = this.selected.size === 0;
 		}
+
+		// Restore scroll position
+		this.listContainer.scrollTop = scrollPos;
 	}
 
 	private renderGroupHeader(container: HTMLElement, label: string, syncs: PendingSync[]) {
@@ -300,8 +304,7 @@ export class CompassSettingTab extends PluginSettingTab {
 				.setWarning()
 				.onClick(async () => {
 					btn.setButtonText("Scanning...").setDisabled(true);
-					// @ts-ignore - access to private prevFm safely handled in orchestrated workflow in prod
-					const pending = await this.plugin.syncService.previewBulkSync(this.plugin.prevFm);
+					const pending = await this.plugin.syncService.previewBulkSync(this.plugin.getFrontmatterCache());
 					btn.setButtonText("Run Scan").setDisabled(false);
 					new BulkSyncModal(this.app, this.plugin, pending).open();
 				})
@@ -385,10 +388,10 @@ export class CompassSettingTab extends PluginSettingTab {
 		Object.assign(headerSetting.settingEl.style, { borderBottom: "1px solid var(--background-modifier-border)", paddingBottom: "8px", marginBottom: "12px", flexWrap: "wrap" });
 		Object.assign(headerSetting.infoEl.style, { display: "flex", alignItems: "center", gap: "8px", flex: "1", minWidth: "200px" });
 
-		this.renderGroupHeaderControls(headerSetting, group, groupIndex, groupContainer);
-
-		const pairsContainer = groupContainer.createDiv();
+		const pairsContainer = groupContainer.createDiv({ cls: "compass-pairs-container" });
 		pairsContainer.style.paddingLeft = "38px";
+
+		this.renderGroupHeaderControls(headerSetting, group, groupIndex, groupContainer, pairsContainer);
 
 		if (group.isCollapsed) pairsContainer.style.display = "none";
 		if (!group.enabled) {
@@ -435,7 +438,7 @@ export class CompassSettingTab extends PluginSettingTab {
 		});
 	}
 
-	private renderGroupHeaderControls(headerSetting: Setting, group: RelationGroup, groupIndex: number, groupContainer: HTMLElement) {
+	private renderGroupHeaderControls(headerSetting: Setting, group: RelationGroup, groupIndex: number, groupContainer: HTMLElement, pairsContainer: HTMLElement) {
 		const dragHandle = headerSetting.infoEl.createDiv({ attr: { style: "cursor: grab; opacity: 0.5; padding: 4px; display: flex; align-items: center;" } });
 		setIcon(dragHandle, "grip-vertical");
 		dragHandle.draggable = true;
@@ -452,7 +455,13 @@ export class CompassSettingTab extends PluginSettingTab {
 
 		const collapseBtn = headerSetting.infoEl.createDiv({ attr: { style: "cursor: pointer; display: flex; align-items: center; opacity: 0.7; padding: 4px; border-radius: 4px;" } });
 		setIcon(collapseBtn, group.isCollapsed ? "chevron-right" : "chevron-down");
-		collapseBtn.onclick = async () => { group.isCollapsed = !group.isCollapsed; await this.plugin.saveSettings(); this.refresh(); };
+
+		collapseBtn.onclick = async () => {
+			group.isCollapsed = !group.isCollapsed;
+			await this.plugin.saveSettings();
+			setIcon(collapseBtn, group.isCollapsed ? "chevron-right" : "chevron-down");
+			pairsContainer.style.display = group.isCollapsed ? "none" : "block";
+		};
 
 		this.renderInlineEditTitle(headerSetting.infoEl, group);
 
@@ -520,7 +529,10 @@ export class CompassSettingTab extends PluginSettingTab {
 			.addExtraButton(btn => btn.setIcon(pair.enabled ? "eye" : "eye-off").onClick(async () => {
 				pair.enabled = !pair.enabled;
 				await this.plugin.saveSettings();
-				this.refresh();
+
+				btn.setIcon(pair.enabled ? "eye" : "eye-off");
+				pairSetting.settingEl.style.opacity = pair.enabled ? "1" : "0.4";
+				pairSetting.settingEl.style.filter = pair.enabled ? "none" : "grayscale(100%)";
 			}))
 			.addText(text => {
 				forwardInput = text.inputEl;

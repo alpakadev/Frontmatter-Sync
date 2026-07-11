@@ -16,7 +16,7 @@ export class LinkService {
 
         const mdMatch = trimmed.match(REGEX.MD_LINK);
         if (mdMatch) {
-            let linkPath = decodeURIComponent(mdMatch[2]).replace(/\.md$/i, "").split("#")[0].trim();
+            const linkPath = decodeURIComponent(mdMatch[2]).replace(/\.md$/i, "").split("#")[0].trim();
             return { isValid: true, target: linkPath };
         }
 
