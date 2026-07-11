@@ -1,4 +1,4 @@
-import { Plugin, TFile, CachedMetadata, Notice } from "obsidian";
+import { Plugin, TFile, TFolder, TAbstractFile, CachedMetadata, Notice } from "obsidian";
 import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync, RelationPair } from "./types";
 import { CompassSettingTab } from "./settings";
 
@@ -23,7 +23,7 @@ export default class CompassSyncPlugin extends Plugin {
 			for (const file of this.app.vault.getMarkdownFiles()) {
 				const cache = this.app.metadataCache.getFileCache(file);
 				if (cache?.frontmatter) {
-					this.prevFm.set(file.path, structuredClone(cache.frontmatter));
+					this.prevFm.set(file.path, this.getTrackedFrontmatter(cache.frontmatter));
 				}
 			}
 
@@ -54,7 +54,7 @@ export default class CompassSyncPlugin extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("create", (file) => {
+			this.app.vault.on("create", (file: TAbstractFile) => {
 				if (!this.vaultReady) return;
 
 				if (file instanceof TFile && file.extension === "md") {
@@ -71,7 +71,7 @@ export default class CompassSyncPlugin extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("rename", (file, oldPath) => {
+			this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
 				if (!this.vaultReady) return;
 
 				if (file instanceof TFile && file.extension === "md") {
@@ -91,12 +91,20 @@ export default class CompassSyncPlugin extends Plugin {
 						void this.processNewFilesQueue();
 					}, 2000);
 				}
+				else if (file instanceof TFolder) {
+					for (const [oldKey, cachedFm] of Array.from(this.prevFm.entries())) {
+						if (oldKey.startsWith(oldPath + "/")) {
+							const newKey = oldKey.replace(oldPath, file.path);
+							this.prevFm.set(newKey, cachedFm);
+							this.prevFm.delete(oldKey);
+						}
+					}
+				}
 			})
 		);
 
-		// FIX: Memory leak prevention on file deletion
 		this.registerEvent(
-			this.app.vault.on("delete", (file) => {
+			this.app.vault.on("delete", (file: TAbstractFile) => {
 				if (file instanceof TFile) {
 					this.prevFm.delete(file.path);
 					this.clearWritingGuard(file.path);
@@ -107,11 +115,23 @@ export default class CompassSyncPlugin extends Plugin {
 					}
 					this.newFilesQueue.delete(file);
 				}
+				else if (file instanceof TFolder) {
+					for (const key of Array.from(this.prevFm.keys())) {
+						if (key.startsWith(file.path + "/")) {
+							this.prevFm.delete(key);
+							this.clearWritingGuard(key);
+							const changeTimer = this.changeTimers.get(key);
+							if (changeTimer) {
+								window.clearTimeout(changeTimer);
+								this.changeTimers.delete(key);
+							}
+						}
+					}
+				}
 			})
 		);
 	}
 
-	// FIX: Safe plugin unloading
 	onunload() {
 		this.changeTimers.forEach(timer => window.clearTimeout(timer));
 		this.writingTimers.forEach(timer => window.clearTimeout(timer));
@@ -122,6 +142,21 @@ export default class CompassSyncPlugin extends Plugin {
 		this.writingFiles.clear();
 		this.prevFm.clear();
 		this.newFilesQueue.clear();
+	}
+
+	private getTrackedFrontmatter(fm: any): Record<string, any> {
+		if (!fm) return {};
+		const tracked: Record<string, any> = {};
+
+		for (const group of this.settings.relationGroups) {
+			if (!group.enabled) continue;
+			for (const pair of group.pairs) {
+				if (!pair.enabled) continue;
+				if (fm[pair.forward] !== undefined) tracked[pair.forward] = structuredClone(fm[pair.forward]);
+				if (fm[pair.inverse] !== undefined) tracked[pair.inverse] = structuredClone(fm[pair.inverse]);
+			}
+		}
+		return tracked;
 	}
 
 	private getDirections(pair: RelationPair): { from: string; to: string }[] {
@@ -136,21 +171,18 @@ export default class CompassSyncPlugin extends Plugin {
 	async handleFileChange(file: TFile, cache: CachedMetadata) {
 		if (this.writingFiles.has(file.path)) {
 			this.clearWritingGuard(file.path);
-			this.prevFm.set(file.path, structuredClone(cache.frontmatter || {}));
+			this.prevFm.set(file.path, this.getTrackedFrontmatter(cache.frontmatter));
 			return;
 		}
 
 		const currentFm = cache.frontmatter || {};
 
 		if (await this.enforceAliasFormatting(file, currentFm)) {
-			// File is currently being saved by Obsidian's processFrontMatter.
-			// Guard is set inside enforceAliasFormatting. We exit early.
 			return;
 		}
 
 		const previousFm = this.prevFm.get(file.path) || {};
 
-		// FIX: Refactored loops using getDirections to avoid duplicated logic
 		for (const group of this.settings.relationGroups) {
 			if (!group.enabled) continue;
 			for (const pair of group.pairs) {
@@ -160,7 +192,7 @@ export default class CompassSyncPlugin extends Plugin {
 			}
 		}
 
-		this.prevFm.set(file.path, structuredClone(currentFm));
+		this.prevFm.set(file.path, this.getTrackedFrontmatter(currentFm));
 	}
 
 	// --- STRICT LINK PARSING & RESOLUTION ENGINE ---
@@ -198,7 +230,6 @@ export default class CompassSyncPlugin extends Plugin {
 
 		if (!needsUpdate) return false;
 
-		// FIX: Set writing guard BEFORE processFrontMatter is called to prevent infinite loops
 		this.setWritingGuard(file.path);
 
 		try {
@@ -298,7 +329,6 @@ export default class CompassSyncPlugin extends Plugin {
 			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
 			if (!(sourceFile instanceof TFile)) continue;
 
-			// FIX: Yield to the main thread occasionally to prevent UI freezing on big vaults
 			if (++iterations % 100 === 0) {
 				await new Promise(resolve => setTimeout(resolve, 0));
 			}
@@ -469,7 +499,6 @@ export default class CompassSyncPlugin extends Plugin {
 							fm[inverseKey] = "";
 							didChange = true;
 						} else {
-							// Basic string cleanup if precise matching failed
 							let cleanedStr = fm[inverseKey].replace(sourceLink, "");
 							cleanedStr = cleanedStr.replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
 							if (cleanedStr !== fm[inverseKey]) {
@@ -599,7 +628,7 @@ export default class CompassSyncPlugin extends Plugin {
 		this.writingFiles.add(path);
 		const timer = window.setTimeout(() => {
 			this.clearWritingGuard(path);
-		}, 3000);
+		}, 1000);
 		this.writingTimers.set(path, timer);
 	}
 
@@ -618,7 +647,6 @@ export default class CompassSyncPlugin extends Plugin {
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 		this.settings.formatting = Object.assign({}, DEFAULT_SETTINGS.formatting, loadedData?.formatting);
 
-		// FIX: Removed legacy relations migration check as it is redundant for modern installs
 		if (!this.settings.relationGroups) this.settings.relationGroups = [];
 	}
 
