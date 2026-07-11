@@ -77,7 +77,6 @@ export default class CompassSyncPlugin extends Plugin {
 					}
 
 					if (!this.settings.notifications.renameDetection) return;
-
 					if (file.basename.startsWith("Untitled")) return;
 
 					this.newFilesQueue.add(file);
@@ -117,80 +116,7 @@ export default class CompassSyncPlugin extends Plugin {
 		this.prevFm.set(file.path, JSON.parse(JSON.stringify(currentFm)));
 	}
 
-	// --- BULK SYNC ENGINE ---
-
-	async previewBulkSync(): Promise<PendingSync[]> {
-		const pending: PendingSync[] = [];
-
-		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
-			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
-			if (!(sourceFile instanceof TFile)) continue;
-
-			for (const group of this.settings.relationGroups) {
-				if (!group.enabled) continue;
-
-				for (const pair of group.pairs) {
-					if (!pair.enabled || !pair.forward || !pair.inverse) continue;
-
-					// 1. Scan Forward -> Inverse
-					const targetsForward = this.extractLinks(previousFm[pair.forward]);
-					for (const targetName of targetsForward.valid) {
-						const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
-						if (targetFile instanceof TFile) {
-							const targetFm = this.prevFm.get(targetFile.path) || {};
-							const inverseLinks = this.extractLinks(targetFm[pair.inverse]);
-
-							if (!inverseLinks.valid.includes(sourceFile.basename)) {
-								pending.push({
-									sourceName: sourceFile.basename,
-									sourceFile: sourceFile,
-									targetFile: targetFile,
-									inverseKey: pair.inverse
-								});
-							}
-						}
-					}
-
-					// 2. Scan Inverse -> Forward
-					if (pair.forward !== pair.inverse) {
-						const targetsInverse = this.extractLinks(previousFm[pair.inverse]);
-						for (const targetName of targetsInverse.valid) {
-							const targetFile = this.app.metadataCache.getFirstLinkpathDest(targetName, sourceFile.path);
-							if (targetFile instanceof TFile) {
-								const targetFm = this.prevFm.get(targetFile.path) || {};
-								const forwardLinks = this.extractLinks(targetFm[pair.forward]);
-
-								if (!forwardLinks.valid.includes(sourceFile.basename)) {
-									pending.push({
-										sourceName: sourceFile.basename,
-										sourceFile: sourceFile,
-										targetFile: targetFile,
-										inverseKey: pair.forward
-									});
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		return pending;
-	}
-
-	async executeBulkSync(pending: PendingSync[]) {
-		for (const sync of pending) {
-			await this.modifyTargetNote(
-				sync.targetFile,
-				sync.sourceFile,
-				sync.sourceName,
-				sync.inverseKey,
-				"add"
-			);
-		}
-		new Notice(`Bulk Sync Complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
-	}
-
-	// --- STRICT LINK PARSING ---
+	// --- STRICT LINK PARSING & RESOLUTION ENGINE ---
 
 	private parseFrontmatterEntry(value: string): { isValid: boolean, target: string } {
 		const trimmed = value.trim();
@@ -232,13 +158,92 @@ export default class CompassSyncPlugin extends Plugin {
 		return { valid, invalid };
 	}
 
+	private getResolvedLinks(value: any, sourcePath: string): { resolved: { raw: string, file: TFile | null }[], invalid: string[] } {
+		const links = this.extractLinks(value);
+		const resolved = links.valid.map(target => {
+			const file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+			return { raw: target, file };
+		});
+		return { resolved, invalid: links.invalid };
+	}
+
+	// --- BULK SYNC ENGINE ---
+
+	async previewBulkSync(): Promise<PendingSync[]> {
+		const pending: PendingSync[] = [];
+
+		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
+			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
+			if (!(sourceFile instanceof TFile)) continue;
+
+			for (const group of this.settings.relationGroups) {
+				if (!group.enabled) continue;
+
+				for (const pair of group.pairs) {
+					if (!pair.enabled || !pair.forward || !pair.inverse) continue;
+
+					const targetsForward = this.getResolvedLinks(previousFm[pair.forward], sourceFile.path);
+					for (const target of targetsForward.resolved) {
+						if (target.file) {
+							const targetFm = this.prevFm.get(target.file.path) || {};
+							const inverseLinks = this.getResolvedLinks(targetFm[pair.inverse], target.file.path);
+
+							const hasBacklink = inverseLinks.resolved.some(r => r.file?.path === sourceFile.path);
+							if (!hasBacklink) {
+								pending.push({
+									sourceName: sourceFile.basename,
+									sourceFile: sourceFile,
+									targetFile: target.file,
+									inverseKey: pair.inverse
+								});
+							}
+						}
+					}
+
+					if (pair.forward !== pair.inverse) {
+						const targetsInverse = this.getResolvedLinks(previousFm[pair.inverse], sourceFile.path);
+						for (const target of targetsInverse.resolved) {
+							if (target.file) {
+								const targetFm = this.prevFm.get(target.file.path) || {};
+								const forwardLinks = this.getResolvedLinks(targetFm[pair.forward], target.file.path);
+
+								const hasBacklink = forwardLinks.resolved.some(r => r.file?.path === sourceFile.path);
+								if (!hasBacklink) {
+									pending.push({
+										sourceName: sourceFile.basename,
+										sourceFile: sourceFile,
+										targetFile: target.file,
+										inverseKey: pair.forward
+									});
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return pending;
+	}
+
+	async executeBulkSync(pending: PendingSync[]) {
+		for (const sync of pending) {
+			await this.modifyTargetNote(
+				sync.targetFile,
+				sync.sourceFile,
+				sync.inverseKey,
+				"add"
+			);
+		}
+		new Notice(`Bulk Sync Complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
+	}
+
 	// --- CORE LOGIC & NOTIFICATIONS ---
 
 	private async processRelation(file: TFile, key: string, inverseKey: string, currentFm: any, previousFm: any) {
-		const current = this.extractLinks(currentFm[key]);
-		const previous = this.extractLinks(previousFm[key]);
+		const currentLinks = this.getResolvedLinks(currentFm[key], file.path);
+		const previousLinks = this.getResolvedLinks(previousFm[key], file.path);
 
-		const addedInvalid = current.invalid.filter(text => !previous.invalid.includes(text));
+		const addedInvalid = currentLinks.invalid.filter(text => !previousLinks.invalid.includes(text));
 
 		if (this.settings.notifications.plainTextWarning) {
 			for (const text of addedInvalid) {
@@ -246,21 +251,35 @@ export default class CompassSyncPlugin extends Plugin {
 			}
 		}
 
-		const added = current.valid.filter(target => !previous.valid.includes(target));
-		const removed = previous.valid.filter(target => !current.valid.includes(target));
+		// Strictly compare underlying file paths to bypass format differences (e.g. [[file]] vs [[folder/file]])
+		const added = currentLinks.resolved.filter(curr => {
+			if (curr.file) {
+				return !previousLinks.resolved.some(prev => prev.file?.path === curr.file!.path);
+			} else {
+				return !previousLinks.resolved.some(prev => prev.raw === curr.raw);
+			}
+		});
 
-		for (const target of added) {
-			await this.modifyTargetNote(target, file, file.basename, inverseKey, "add");
+		const removed = previousLinks.resolved.filter(prev => {
+			if (prev.file) {
+				return !currentLinks.resolved.some(curr => curr.file?.path === prev.file!.path);
+			} else {
+				return !currentLinks.resolved.some(curr => curr.raw === prev.raw);
+			}
+		});
+
+		for (const item of added) {
+			await this.modifyTargetNote(item.file || item.raw, file, inverseKey, "add");
 		}
 
-		for (const target of removed) {
-			await this.modifyTargetNote(target, file, file.basename, inverseKey, "remove");
+		for (const item of removed) {
+			await this.modifyTargetNote(item.file || item.raw, file, inverseKey, "remove");
 		}
 	}
 
 	// --- FILE WRITING & PRESERVING YAML TYPES ---
 
-	private async modifyTargetNote(target: string | TFile, sourceFile: TFile, sourceNoteName: string, inverseKey: string, action: "add" | "remove") {
+	private async modifyTargetNote(target: string | TFile, sourceFile: TFile, inverseKey: string, action: "add" | "remove") {
 		let targetFile: TFile | null = null;
 
 		if (target instanceof TFile) {
@@ -276,31 +295,52 @@ export default class CompassSyncPlugin extends Plugin {
 			return;
 		}
 
+		// --- NEW LINK GENERATION LOGIC ---
+		const linkText = this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
+		let sourceLink = `[[${linkText}]]`;
+
+		if (this.settings.formatting?.useAliasForPaths && linkText.includes("/")) {
+			sourceLink = `[[${linkText}|${sourceFile.basename}]]`;
+		}
+		// ----------------------------------
+
 		this.setWritingGuard(targetFile.path);
 
 		try {
 			let didChange = false;
 
 			await this.app.fileManager.processFrontMatter(targetFile, (fm) => {
-				const sourceLink = `[[${sourceNoteName}]]`;
+				const existing = fm[inverseKey];
+				const existingArray = Array.isArray(existing) ? existing : (typeof existing === "string" && existing.trim() !== "" ? [existing] : []);
 
 				if (action === "add") {
-					if (fm[inverseKey] === undefined || fm[inverseKey] === null) {
-						fm[inverseKey] = [sourceLink];
-						didChange = true;
-					}
-					else if (Array.isArray(fm[inverseKey])) {
-						if (!fm[inverseKey].includes(sourceLink)) {
-							fm[inverseKey].push(sourceLink);
-							didChange = true;
+					let alreadyExists = false;
+					for (const rawLink of existingArray) {
+						if (typeof rawLink === "string") {
+							const parsed = this.parseFrontmatterEntry(rawLink);
+							if (parsed.isValid) {
+								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
+								if (dest && dest.path === sourceFile.path) {
+									alreadyExists = true;
+									break;
+								}
+							}
 						}
 					}
-					else if (typeof fm[inverseKey] === "string") {
-						if (fm[inverseKey].trim() === "") {
-							fm[inverseKey] = sourceLink;
+
+					if (!alreadyExists) {
+						if (fm[inverseKey] === undefined || fm[inverseKey] === null) {
+							fm[inverseKey] = [sourceLink];
 							didChange = true;
-						} else if (!fm[inverseKey].includes(sourceLink)) {
-							fm[inverseKey] = `${fm[inverseKey]}, ${sourceLink}`;
+						} else if (Array.isArray(fm[inverseKey])) {
+							fm[inverseKey].push(sourceLink);
+							didChange = true;
+						} else if (typeof fm[inverseKey] === "string") {
+							if (fm[inverseKey].trim() === "") {
+								fm[inverseKey] = sourceLink;
+							} else {
+								fm[inverseKey] = `${fm[inverseKey]}, ${sourceLink}`;
+							}
 							didChange = true;
 						}
 					}
@@ -308,14 +348,36 @@ export default class CompassSyncPlugin extends Plugin {
 				else if (action === "remove") {
 					if (Array.isArray(fm[inverseKey])) {
 						const originalLength = fm[inverseKey].length;
-						fm[inverseKey] = fm[inverseKey].filter((link: string) => link !== sourceLink);
+						fm[inverseKey] = fm[inverseKey].filter((rawLink: string) => {
+							const parsed = this.parseFrontmatterEntry(rawLink);
+							if (parsed.isValid) {
+								const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
+								// If the path strictly matches, remove it, regardless of its visual format
+								if (dest && dest.path === sourceFile.path) return false;
+							}
+							return rawLink !== sourceLink;
+						});
 						if (fm[inverseKey].length !== originalLength) didChange = true;
 					}
-					else if (typeof fm[inverseKey] === "string" && fm[inverseKey].includes(sourceLink)) {
-						let cleanedStr = fm[inverseKey].replace(sourceLink, "");
-						cleanedStr = cleanedStr.replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
-						fm[inverseKey] = cleanedStr;
-						didChange = true;
+					else if (typeof fm[inverseKey] === "string") {
+						const parsed = this.parseFrontmatterEntry(fm[inverseKey]);
+						let shouldRemove = false;
+						if (parsed.isValid) {
+							const dest = this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path);
+							if (dest && dest.path === sourceFile.path) shouldRemove = true;
+						}
+
+						if (shouldRemove) {
+							fm[inverseKey] = "";
+							didChange = true;
+						} else {
+							let cleanedStr = fm[inverseKey].replace(sourceLink, "");
+							cleanedStr = cleanedStr.replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
+							if (cleanedStr !== fm[inverseKey]) {
+								fm[inverseKey] = cleanedStr;
+								didChange = true;
+							}
+						}
 					}
 				}
 			});
@@ -357,7 +419,11 @@ export default class CompassSyncPlugin extends Plugin {
 					const targetsInverse = pair.forward !== pair.inverse ? this.extractLinks(previousFm[pair.inverse]) : { valid: [], invalid: [] };
 
 					for (const newFile of filesToProcess) {
-						if (targetsForward.valid.includes(newFile.basename)) {
+						// Match if exact raw string matches OR if it resolves to the new file's path
+						const isForwardMatch = targetsForward.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
+						const isInverseMatch = targetsInverse.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
+
+						if (isForwardMatch) {
 							pendingSyncs.push({
 								sourceName: sourceFile.basename,
 								sourceFile,
@@ -365,7 +431,7 @@ export default class CompassSyncPlugin extends Plugin {
 								inverseKey: pair.inverse
 							});
 						}
-						if (targetsInverse.valid.includes(newFile.basename)) {
+						if (isInverseMatch) {
 							pendingSyncs.push({
 								sourceName: sourceFile.basename,
 								sourceFile,
@@ -426,7 +492,6 @@ export default class CompassSyncPlugin extends Plugin {
 				await this.modifyTargetNote(
 					sync.targetFile,
 					sync.sourceFile,
-					sync.sourceName,
 					sync.inverseKey,
 					"add"
 				);
@@ -463,6 +528,7 @@ export default class CompassSyncPlugin extends Plugin {
 		const loadedData = await this.loadData();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
+		this.settings.formatting = Object.assign({}, DEFAULT_SETTINGS.formatting, loadedData?.formatting);
 
 		if (this.settings.relations && this.settings.relations.length > 0) {
 			this.settings.relationGroups = [{

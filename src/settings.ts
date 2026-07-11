@@ -320,6 +320,20 @@ export class CompassSettingTab extends PluginSettingTab {
 				})
 			);
 
+		// --- FORMATTING SECTION ---
+		containerEl.createEl("h3", { text: "Link Formatting" });
+
+		new Setting(containerEl)
+			.setName("Use aliases for path links")
+			.setDesc("When Obsidian requires a folder path to disambiguate duplicate file names, append the file name as an alias to keep the visual link clean (e.g., [[Path/To/File|File]]).")
+			.addToggle((toggle) => toggle
+				.setValue(this.plugin.settings.formatting.useAliasForPaths)
+				.onChange(async (value) => {
+					this.plugin.settings.formatting.useAliasForPaths = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
 		// --- NOTIFICATIONS SECTION ---
 		containerEl.createEl("h3", { text: "Notifications" });
 

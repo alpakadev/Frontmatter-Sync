@@ -9,6 +9,10 @@ export interface NotificationSettings {
     renameDetection: boolean;
 }
 
+export interface FormattingSettings {
+    useAliasForPaths: boolean;
+}
+
 export interface RelationPair {
     forward: string;
     inverse: string;
@@ -25,6 +29,7 @@ export interface RelationGroup {
 export interface CompassSyncSettings {
     relationGroups: RelationGroup[];
     notifications: NotificationSettings;
+    formatting: FormattingSettings;
     relations?: RelationPair[];
 }
 
@@ -51,5 +56,8 @@ export const DEFAULT_SETTINGS: CompassSyncSettings = {
         ghostLinkPrompt: true,
         checkOnStartup: false,
         renameDetection: true
+    },
+    formatting: {
+        useAliasForPaths: true
     }
 };
