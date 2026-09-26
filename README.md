@@ -36,5 +36,5 @@ For symmetrical relationships (e.g., `siblings`), simply set both the forward an
 
 1. Download the latest release from the GitHub repository.
 2. Extract the `main.js`, `manifest.json`, and `styles.css` files.
-3. Place them in your vault's plugin directory: `YourVault/.obsidian/plugins/compass-sync/`.
+3. Place them in your vault's plugin directory: `YourVault/.obsidian/plugins/frontmatter-sync/`.
 4. Reload Obsidian and enable the plugin in the Community Plugins settings tab.

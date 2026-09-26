@@ -1,5 +1,5 @@
 import { App, PluginSettingTab, Setting, AbstractInputSuggest, Modal, setIcon } from "obsidian";
-import type CompassSyncPlugin from "./main";
+import type FrontmatterSyncPlugin from "./main";
 import { PendingSync, RelationGroup, RelationPair } from "./types";
 
 // --- NATIVE OBSIDIAN SUGGESTION MENU ---
@@ -106,7 +106,7 @@ class BulkSyncModal extends Modal {
 	private listContainer!: HTMLElement;
 	private applyBtn!: HTMLButtonElement;
 
-	constructor(app: App, private plugin: CompassSyncPlugin, private pending: PendingSync[]) {
+	constructor(app: App, private plugin: FrontmatterSyncPlugin, private pending: PendingSync[]) {
 		super(app);
 		this.selected = new Set(this.pending);
 	}
@@ -251,13 +251,13 @@ class BulkSyncModal extends Modal {
 }
 
 // --- MAIN SETTINGS TAB ---
-export class CompassSettingTab extends PluginSettingTab {
+export class FrontmatterSyncSettingTab extends PluginSettingTab {
 	private draggedGroupIndex: number | null = null;
 	private draggedPairData: { groupIndex: number, pairIndex: number } | null = null;
 	private focusTarget: { groupIndex: number, pairIndex: number } | null = null;
 	private keysArray: string[] = [];
 
-	constructor(app: App, public plugin: CompassSyncPlugin) {
+	constructor(app: App, public plugin: FrontmatterSyncPlugin) {
 		super(app, plugin);
 	}
 
@@ -286,7 +286,7 @@ export class CompassSettingTab extends PluginSettingTab {
 		containerEl.empty();
 		this.loadPropertyKeys();
 
-		containerEl.createEl("h2", { text: "Relation Sync Settings" });
+		containerEl.createEl("h2", { text: "Frontmatter Sync Settings" });
 
 		this.renderVaultMaintenance(containerEl);
 		this.renderLinkFormatting(containerEl);
@@ -388,7 +388,7 @@ export class CompassSettingTab extends PluginSettingTab {
 		Object.assign(headerSetting.settingEl.style, { borderBottom: "1px solid var(--background-modifier-border)", paddingBottom: "8px", marginBottom: "12px", flexWrap: "wrap" });
 		Object.assign(headerSetting.infoEl.style, { display: "flex", alignItems: "center", gap: "8px", flex: "1", minWidth: "200px" });
 
-		const pairsContainer = groupContainer.createDiv({ cls: "compass-pairs-container" });
+		const pairsContainer = groupContainer.createDiv({ cls: "frontmatter-sync-pairs-container" });
 		pairsContainer.style.paddingLeft = "38px";
 
 		this.renderGroupHeaderControls(headerSetting, group, groupIndex, groupContainer, pairsContainer);

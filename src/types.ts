@@ -26,7 +26,7 @@ export interface RelationGroup {
     pairs: RelationPair[];
 }
 
-export interface CompassSyncSettings {
+export interface FrontmatterSyncSettings {
     relationGroups: RelationGroup[];
     notifications: NotificationSettings;
     formatting: FormattingSettings;
@@ -39,7 +39,7 @@ export interface PendingSync {
     inverseKey: string;
 }
 
-export const DEFAULT_SETTINGS: CompassSyncSettings = {
+export const DEFAULT_SETTINGS: FrontmatterSyncSettings = {
     relationGroups: [
         {
             name: "Default Group",

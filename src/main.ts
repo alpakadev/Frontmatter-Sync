@@ -1,12 +1,12 @@
 import { Plugin, TFile, TFolder, TAbstractFile, CachedMetadata, Notice } from "obsidian";
-import { CompassSyncSettings, DEFAULT_SETTINGS, PendingSync } from "./types";
-import { CompassSettingTab } from "./settings";
+import { FrontmatterSyncSettings, DEFAULT_SETTINGS, PendingSync } from "./types";
+import { FrontmatterSyncSettingTab } from "./settings";
 import { LinkService } from "./LinkService";
 import { SyncService } from "./SyncService";
 import { TIMERS } from "./constants";
 
-export default class CompassSyncPlugin extends Plugin {
-	settings!: CompassSyncSettings;
+export default class FrontmatterSyncPlugin extends Plugin {
+	settings!: FrontmatterSyncSettings;
 
 	private linkService!: LinkService;
 	public syncService!: SyncService;
@@ -24,7 +24,7 @@ export default class CompassSyncPlugin extends Plugin {
 		this.linkService = new LinkService(this.app);
 		this.syncService = new SyncService(this.app, this.settings, this.linkService);
 
-		this.addSettingTab(new CompassSettingTab(this.app, this));
+		this.addSettingTab(new FrontmatterSyncSettingTab(this.app, this));
 
 		this.app.workspace.onLayoutReady(async () => this.initializeCache());
 		this.registerVaultEvents();
@@ -210,8 +210,8 @@ export default class CompassSyncPlugin extends Plugin {
 		notice.noticeEl.empty();
 
 		const message = context === "startup"
-			? `Relation Sync: Startup scan found ${pendingSyncs.length} pending backlink(s).`
-			: `Relation Sync: Detected ${fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`} with ${pendingSyncs.length} pending backlink(s).`;
+			? `Frontmatter Sync: Startup scan found ${pendingSyncs.length} pending backlink(s).`
+			: `Frontmatter Sync: Detected ${fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`} with ${pendingSyncs.length} pending backlink(s).`;
 
 		notice.noticeEl.createDiv({ text: message, attr: { style: "margin-bottom: 12px; font-weight: 500;" } });
 
