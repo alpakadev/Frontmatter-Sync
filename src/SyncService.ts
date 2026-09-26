@@ -1,5 +1,5 @@
 import { App, Notice, TFile } from "obsidian";
-import { CompassSyncSettings, PendingSync, RelationPair } from "./types";
+import { FrontmatterSyncSettings, PendingSync, RelationPair } from "./types";
 import { LinkService } from "./LinkService";
 import { TIMERS, REGEX } from "./constants";
 
@@ -10,7 +10,7 @@ export class SyncService {
 
     constructor(
         private app: App,
-        private settings: CompassSyncSettings,
+        private settings: FrontmatterSyncSettings,
         private linkService: LinkService
     ) { }
 
@@ -155,7 +155,7 @@ export class SyncService {
 
         if (this.settings.notifications.plainTextWarning) {
             for (const text of addedInvalid) {
-                new Notice(`Relation Sync: "${text}" is plain text. Please use [[${text}]] in property '${key}' to sync.`);
+                new Notice(`Frontmatter Sync: "${text}" is plain text. Please use [[${text}]] in property '${key}' to sync.`);
             }
         }
 
@@ -184,7 +184,7 @@ export class SyncService {
 
         if (!(targetFile instanceof TFile)) {
             if (typeof target === "string" && action === "add" && this.settings.notifications.ghostLinkWarning) {
-                new Notice(`Relation Sync: Note "${target}" does not exist yet.`);
+                new Notice(`Frontmatter Sync: Note "${target}" does not exist yet.`);
             }
             return;
         }
@@ -258,7 +258,7 @@ export class SyncService {
             if (didChange) {
                 this.setWritingGuard(targetFile.path, resultingFm);
                 if (this.settings.notifications.backgroundSync) {
-                    new Notice(`Relation Sync: Updated background note "${targetFile.basename}"`);
+                    new Notice(`Frontmatter Sync: Updated background note "${targetFile.basename}"`);
                 }
             }
         } catch (error) {
