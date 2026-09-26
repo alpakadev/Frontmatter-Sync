@@ -1,8 +1,111 @@
-/*
+/* Utility */
+.frontmatter-sync-hidden {
+	display: none !important;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Sync prompt notice */
+.frontmatter-sync-notice-message {
+	margin-bottom: 12px;
+	font-weight: 500;
+}
 
-If your plugin does not need CSS, delete this file.
+.frontmatter-sync-notice-buttons {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
 
-*/
+/* Relation group card */
+.frontmatter-sync-group {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 12px;
+	margin-bottom: 16px;
+	background: var(--background-secondary);
+	transition: border 0.2s ease;
+}
+
+.frontmatter-sync-group.frontmatter-sync-drop-before {
+	border-top: 3px solid var(--interactive-accent);
+}
+
+.frontmatter-sync-group.frontmatter-sync-drop-into {
+	border: 1px dashed var(--interactive-accent);
+}
+
+.frontmatter-sync-group.frontmatter-sync-is-dragging {
+	opacity: 0.5;
+}
+
+/* Inline-editable group title */
+.frontmatter-sync-group-title {
+	font-weight: bold;
+	font-size: 1.1em;
+	cursor: text;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.frontmatter-sync-group input.frontmatter-sync-group-title-input {
+	flex: 1;
+	min-width: 50px;
+	font-weight: bold;
+	font-size: 1.1em;
+	padding: 2px 6px;
+}
+
+.frontmatter-sync-group-title-edit {
+	cursor: pointer;
+	opacity: 0.4;
+	margin-left: 8px;
+	display: flex;
+	align-items: center;
+}
+
+/* Relation pairs */
+.frontmatter-sync-pairs-container {
+	padding-left: 38px;
+}
+
+.frontmatter-sync-pairs-container.frontmatter-sync-is-disabled {
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+.frontmatter-sync-pairs-container .setting-item.frontmatter-sync-pair {
+	border-top: none;
+	padding: 6px 0;
+	flex-wrap: nowrap;
+	gap: 8px;
+	cursor: grab;
+}
+
+.frontmatter-sync-pairs-container .frontmatter-sync-pair .setting-item-info {
+	display: none;
+}
+
+.frontmatter-sync-pairs-container .frontmatter-sync-pair .setting-item-control {
+	justify-content: flex-start;
+	width: 100%;
+	flex: 1;
+}
+
+.frontmatter-sync-pairs-container .frontmatter-sync-pair .setting-item-control input[type="text"] {
+	flex: 1 1 50px;
+	min-width: 0;
+	width: 100%;
+}
+
+.frontmatter-sync-pairs-container .setting-item.frontmatter-sync-pair.frontmatter-sync-is-disabled {
+	opacity: 0.4;
+	filter: grayscale(100%);
+}
+
+.frontmatter-sync-pairs-container .setting-item.frontmatter-sync-pair.frontmatter-sync-is-dragging {
+	opacity: 0.3;
+}
+
+.frontmatter-sync-pairs-container .setting-item.frontmatter-sync-pair.frontmatter-sync-drop-before {
+	border-top: 2px solid var(--interactive-accent);
+}

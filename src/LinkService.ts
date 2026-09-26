@@ -10,13 +10,13 @@ export class LinkService {
 
         const wikiMatch = trimmed.match(REGEX.WIKI_LINK);
         if (wikiMatch) {
-            const cleanName = wikiMatch[1].split("|")[0].split("#")[0].trim();
+            const cleanName = (wikiMatch[1] ?? "").split("|")[0]?.split("#")[0]?.trim() ?? "";
             return { isValid: true, target: cleanName };
         }
 
         const mdMatch = trimmed.match(REGEX.MD_LINK);
         if (mdMatch) {
-            const linkPath = decodeURIComponent(mdMatch[2]).replace(/\.md$/i, "").split("#")[0].trim();
+            const linkPath = decodeURIComponent(mdMatch[2] ?? "").replace(/\.md$/i, "").split("#")[0]?.trim() ?? "";
             return { isValid: true, target: linkPath };
         }
 
@@ -51,4 +51,4 @@ export class LinkService {
         }));
         return { resolved, invalid: links.invalid };
     }
-}
+}

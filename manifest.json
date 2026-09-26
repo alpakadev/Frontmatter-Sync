@@ -2,7 +2,7 @@
 	"id": "frontmatter-sync",
 	"name": "Frontmatter Sync",
 	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
+	"minAppVersion": "1.4.10",
 	"description": "Keep two-way relationships between notes in sync through frontmatter properties.",
 	"author": "Melik Özcelik",
 	"authorUrl": "https://github.com/alpakadev",

@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, AbstractInputSuggest, Modal, setIcon } from "obsidian";
+import { App, MetadataCache, PluginSettingTab, Setting, AbstractInputSuggest, Modal, setIcon } from "obsidian";
 import type FrontmatterSyncPlugin from "./main";
 import { PendingSync, RelationGroup, RelationPair } from "./types";
 
@@ -80,7 +80,7 @@ class ConfirmDeleteModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.createEl("h2", { text: "Delete Folder" });
+		contentEl.createEl("h2", { text: "Delete folder" });
 		contentEl.createEl("p", {
 			text: `Are you sure you want to delete the folder "${this.groupName}" and all its pairs? This action cannot be undone.`,
 			cls: "setting-item-description"
@@ -114,7 +114,7 @@ class BulkSyncModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.createEl("h2", { text: "Bulk Sync Preview" });
+		contentEl.createEl("h2", { text: "Bulk sync preview" });
 
 		if (this.pending.length === 0) {
 			contentEl.createEl("p", { text: "Your vault is completely synchronized. No missing bidirectional links found." });
@@ -128,13 +128,13 @@ class BulkSyncModal extends Modal {
 		});
 
 		const toolbar = contentEl.createDiv({ attr: { style: "display: flex; gap: 8px; margin-bottom: 12px; align-items: center;" } });
-		toolbar.createEl("button", { text: "Select All" }).onclick = () => { this.pending.forEach(p => this.selected.add(p)); this.renderList(); };
-		toolbar.createEl("button", { text: "Unselect All" }).onclick = () => { this.selected.clear(); this.renderList(); };
+		toolbar.createEl("button", { text: "Select all" }).onclick = () => { this.pending.forEach(p => this.selected.add(p)); this.renderList(); };
+		toolbar.createEl("button", { text: "Unselect all" }).onclick = () => { this.selected.clear(); this.renderList(); };
 
-		const viewToggleBtn = toolbar.createEl("button", { text: "View: Folders" });
+		const viewToggleBtn = toolbar.createEl("button", { text: "View: folders" });
 		viewToggleBtn.onclick = () => {
 			this.viewMode = this.viewMode === "folder" ? "file" : "folder";
-			viewToggleBtn.innerText = this.viewMode === "folder" ? "View: Folders" : "View: Files";
+			viewToggleBtn.innerText = this.viewMode === "folder" ? "View: folders" : "View: files";
 			this.renderList();
 		};
 
@@ -146,7 +146,7 @@ class BulkSyncModal extends Modal {
 			.addButton(btn => btn.setButtonText("Close").onClick(() => this.close()))
 			.addButton(btn => {
 				this.applyBtn = btn.buttonEl;
-				btn.setButtonText(`Apply ${this.selected.size} Changes`).setCta().onClick(async () => {
+				btn.setButtonText(`Apply ${this.selected.size} changes`).setCta().onClick(async () => {
 					btn.setButtonText("Applying...").setDisabled(true);
 					await this.plugin.syncService.executeBulkSync(Array.from(this.selected));
 					this.close();
@@ -205,7 +205,7 @@ class BulkSyncModal extends Modal {
 		}
 
 		if (this.applyBtn) {
-			this.applyBtn.innerText = `Apply ${this.selected.size} Changes`;
+			this.applyBtn.innerText = `Apply ${this.selected.size} changes`;
 			this.applyBtn.disabled = this.selected.size === 0;
 		}
 
@@ -236,12 +236,14 @@ class BulkSyncModal extends Modal {
 
 		cb.onchange = (e) => {
 			const checked = (e.target as HTMLInputElement).checked;
-			checked ? this.selected.add(sync) : this.selected.delete(sync);
+			if (checked) this.selected.add(sync);
+			else this.selected.delete(sync);
 			this.renderList();
 		};
 
 		const textSpan = item.createSpan({ attr: { style: "font-size: 0.9em; font-family: var(--font-monospace); color: var(--text-muted); cursor: pointer;" } });
-		textSpan.innerHTML = `Add <span style="color: var(--text-normal)">${sync.inverseKey}: [[${sync.sourceName}]]</span>`;
+		textSpan.appendText("Add ");
+		textSpan.createSpan({ text: `${sync.inverseKey}: [[${sync.sourceName}]]`, attr: { style: "color: var(--text-normal)" } });
 		textSpan.onclick = () => cb.click();
 	}
 
@@ -269,9 +271,10 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 
 	private loadPropertyKeys() {
 		const rawKeys = new Set<string>();
-		if (typeof (this.app.metadataCache as any).getAllPropertyKeys === "function") {
-			const props = (this.app.metadataCache as any).getAllPropertyKeys();
-			props.forEach((p: string) => rawKeys.add(p));
+		const metadataCache = this.app.metadataCache as MetadataCache & { getAllPropertyKeys?: () => string[] };
+		if (typeof metadataCache.getAllPropertyKeys === "function") {
+			const props = metadataCache.getAllPropertyKeys();
+			props.forEach(p => rawKeys.add(p));
 		} else {
 			for (const file of this.app.vault.getMarkdownFiles()) {
 				const cache = this.app.metadataCache.getFileCache(file);
@@ -286,8 +289,6 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 		containerEl.empty();
 		this.loadPropertyKeys();
 
-		containerEl.createEl("h2", { text: "Frontmatter Sync Settings" });
-
 		this.renderVaultMaintenance(containerEl);
 		this.renderLinkFormatting(containerEl);
 		this.renderNotifications(containerEl);
@@ -295,27 +296,27 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 	}
 
 	private renderVaultMaintenance(containerEl: HTMLElement) {
-		containerEl.createEl("h3", { text: "Vault Maintenance" });
+		new Setting(containerEl).setName("Vault maintenance").setHeading();
 		new Setting(containerEl)
-			.setName("Bulk Sync Missing Relations")
+			.setName("Bulk sync missing relations")
 			.setDesc("Scan the entire vault for missing bidirectional links and add them automatically. A preview will be shown before changes are applied.")
 			.addButton((btn) => btn
-				.setButtonText("Run Scan")
+				.setButtonText("Run scan")
 				.setWarning()
 				.onClick(async () => {
 					btn.setButtonText("Scanning...").setDisabled(true);
 					const pending = await this.plugin.syncService.previewBulkSync(this.plugin.getFrontmatterCache());
-					btn.setButtonText("Run Scan").setDisabled(false);
+					btn.setButtonText("Run scan").setDisabled(false);
 					new BulkSyncModal(this.app, this.plugin, pending).open();
 				})
 			);
 	}
 
 	private renderLinkFormatting(containerEl: HTMLElement) {
-		containerEl.createEl("h3", { text: "Link Formatting" });
+		new Setting(containerEl).setName("Link formatting").setHeading();
 		new Setting(containerEl)
 			.setName("Use aliases for path links")
-			.setDesc("When Obsidian requires a folder path to disambiguate duplicate file names, append the file name as an alias to keep the visual link clean (e.g., [[Path/To/File|File]]).")
+			.setDesc("When Obsidian requires a folder path to disambiguate duplicate file names, append the file name as an alias to keep the visual link clean, for example [[folder/note|note]].")
 			.addToggle((toggle) => toggle
 				.setValue(this.plugin.settings.formatting.useAliasForPaths)
 				.onChange(async (value) => {
@@ -326,7 +327,7 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 	}
 
 	private renderNotifications(containerEl: HTMLElement) {
-		containerEl.createEl("h3", { text: "Notifications" });
+		new Setting(containerEl).setName("Notifications").setHeading();
 
 		const createNotificationToggle = (name: string, desc: string, key: keyof typeof this.plugin.settings.notifications) => {
 			new Setting(containerEl)
@@ -350,11 +351,11 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 	}
 
 	private renderRelationGroups(containerEl: HTMLElement) {
-		containerEl.createEl("h3", { text: "Relation Groups" });
+		new Setting(containerEl).setName("Relation groups").setHeading();
 
 		const topActions = containerEl.createDiv({ attr: { style: "display: flex; gap: 8px; margin-bottom: 20px; align-items: center;" } });
 
-		const addGroupBtn = topActions.createEl("button", { text: "Add Folder Group", cls: "mod-cta" });
+		const addGroupBtn = topActions.createEl("button", { text: "Add folder group", cls: "mod-cta" });
 		addGroupBtn.onclick = async () => {
 			this.plugin.settings.relationGroups.push({ name: "New Group", enabled: true, isCollapsed: false, pairs: [] });
 			await this.plugin.saveSettings();
@@ -362,7 +363,7 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 		};
 
 		const hasEnabledItems = this.plugin.settings.relationGroups.some(g => g.enabled || g.pairs.some(p => p.enabled));
-		const toggleAllBtn = topActions.createEl("button", { text: hasEnabledItems ? "Deactivate All" : "Activate All" });
+		const toggleAllBtn = topActions.createEl("button", { text: hasEnabledItems ? "Deactivate all" : "Activate all" });
 		toggleAllBtn.onclick = async () => {
 			const newState = !hasEnabledItems;
 			this.plugin.settings.relationGroups.forEach(g => {
@@ -378,9 +379,7 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 	}
 
 	private renderSingleGroup(listContainer: HTMLElement, group: RelationGroup, groupIndex: number) {
-		const groupContainer = listContainer.createDiv({
-			attr: { style: "border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 12px; margin-bottom: 16px; background: var(--background-secondary); transition: border 0.2s ease;" }
-		});
+		const groupContainer = listContainer.createDiv({ cls: "frontmatter-sync-group" });
 
 		this.setupGroupDragAndDrop(groupContainer, groupIndex);
 
@@ -389,15 +388,11 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 		Object.assign(headerSetting.infoEl.style, { display: "flex", alignItems: "center", gap: "8px", flex: "1", minWidth: "200px" });
 
 		const pairsContainer = groupContainer.createDiv({ cls: "frontmatter-sync-pairs-container" });
-		pairsContainer.style.paddingLeft = "38px";
 
 		this.renderGroupHeaderControls(headerSetting, group, groupIndex, groupContainer, pairsContainer);
 
-		if (group.isCollapsed) pairsContainer.style.display = "none";
-		if (!group.enabled) {
-			pairsContainer.style.opacity = "0.5";
-			pairsContainer.style.pointerEvents = "none";
-		}
+		pairsContainer.toggleClass("frontmatter-sync-hidden", !!group.isCollapsed);
+		pairsContainer.toggleClass("frontmatter-sync-is-disabled", !group.enabled);
 
 		group.pairs.forEach((pair, pairIndex) => this.renderPair(pairsContainer, group, groupIndex, pair, pairIndex));
 	}
@@ -407,35 +402,39 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 			e.preventDefault();
 			if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
 			if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
-				groupContainer.style.borderTop = "3px solid var(--interactive-accent)";
+				groupContainer.addClass("frontmatter-sync-drop-before");
 			} else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
-				groupContainer.style.border = "1px dashed var(--interactive-accent)";
+				groupContainer.addClass("frontmatter-sync-drop-into");
 			}
 		});
 
-		groupContainer.addEventListener("dragleave", () => {
-			groupContainer.style.border = "1px solid var(--background-modifier-border)";
-		});
+		const clearDropIndicator = () => groupContainer.removeClasses(["frontmatter-sync-drop-before", "frontmatter-sync-drop-into"]);
 
-		groupContainer.addEventListener("drop", async (e) => {
+		groupContainer.addEventListener("dragleave", clearDropIndicator);
+
+		groupContainer.addEventListener("drop", (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			groupContainer.style.border = "1px solid var(--background-modifier-border)";
-
-			if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
-				const movedGroup = this.plugin.settings.relationGroups.splice(this.draggedGroupIndex, 1)[0];
-				this.plugin.settings.relationGroups.splice(groupIndex, 0, movedGroup);
-				this.draggedGroupIndex = null;
-				await this.plugin.saveSettings();
-				this.refresh();
-			} else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
-				const movedPair = this.plugin.settings.relationGroups[this.draggedPairData.groupIndex].pairs.splice(this.draggedPairData.pairIndex, 1)[0];
-				this.plugin.settings.relationGroups[groupIndex].pairs.push(movedPair);
-				this.draggedPairData = null;
-				await this.plugin.saveSettings();
-				this.refresh();
-			}
+			clearDropIndicator();
+			void this.handleGroupDrop(groupIndex);
 		});
+	}
+
+	private async handleGroupDrop(groupIndex: number) {
+		const groups = this.plugin.settings.relationGroups;
+		if (this.draggedGroupIndex !== null && this.draggedGroupIndex !== groupIndex) {
+			const [movedGroup] = groups.splice(this.draggedGroupIndex, 1);
+			if (movedGroup) groups.splice(groupIndex, 0, movedGroup);
+			this.draggedGroupIndex = null;
+			await this.plugin.saveSettings();
+			this.refresh();
+		} else if (this.draggedPairData !== null && this.draggedPairData.groupIndex !== groupIndex) {
+			const [movedPair] = groups[this.draggedPairData.groupIndex]?.pairs.splice(this.draggedPairData.pairIndex, 1) ?? [];
+			if (movedPair) groups[groupIndex]?.pairs.push(movedPair);
+			this.draggedPairData = null;
+			await this.plugin.saveSettings();
+			this.refresh();
+		}
 	}
 
 	private renderGroupHeaderControls(headerSetting: Setting, group: RelationGroup, groupIndex: number, groupContainer: HTMLElement, pairsContainer: HTMLElement) {
@@ -446,11 +445,11 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 		dragHandle.addEventListener("dragstart", (e) => {
 			this.draggedGroupIndex = groupIndex;
 			if (e.dataTransfer) { e.dataTransfer.setData("text/plain", "group"); e.dataTransfer.effectAllowed = "move"; }
-			groupContainer.style.opacity = "0.5";
+			groupContainer.addClass("frontmatter-sync-is-dragging");
 		});
 		dragHandle.addEventListener("dragend", () => {
 			this.draggedGroupIndex = null;
-			groupContainer.style.opacity = "1";
+			groupContainer.removeClass("frontmatter-sync-is-dragging");
 		});
 
 		const collapseBtn = headerSetting.infoEl.createDiv({ attr: { style: "cursor: pointer; display: flex; align-items: center; opacity: 0.7; padding: 4px; border-radius: 4px;" } });
@@ -460,7 +459,7 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 			group.isCollapsed = !group.isCollapsed;
 			await this.plugin.saveSettings();
 			setIcon(collapseBtn, group.isCollapsed ? "chevron-right" : "chevron-down");
-			pairsContainer.style.display = group.isCollapsed ? "none" : "block";
+			pairsContainer.toggleClass("frontmatter-sync-hidden", !!group.isCollapsed);
 		};
 
 		this.renderInlineEditTitle(headerSetting.infoEl, group);
@@ -480,44 +479,43 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 				this.refresh();
 			}))
 			.addExtraButton(btn => btn.setIcon("trash").onClick(() => {
-				new ConfirmDeleteModal(this.app, group.name, async () => {
+				new ConfirmDeleteModal(this.app, group.name, () => {
 					this.plugin.settings.relationGroups.splice(groupIndex, 1);
-					await this.plugin.saveSettings();
-					this.refresh();
+					void this.plugin.saveSettings().then(() => this.refresh());
 				}).open();
 			}));
 	}
 
 	private renderInlineEditTitle(container: HTMLElement, group: RelationGroup) {
 		const titleContainer = container.createDiv({ attr: { style: "display: flex; flex: 1; align-items: center; min-width: 0;" } });
-		const titleSpan = titleContainer.createSpan({ text: group.name, attr: { style: "font-weight: bold; font-size: 1.1em; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" } });
-		const titleInput = titleContainer.createEl("input", { type: "text", value: group.name, attr: { style: "display: none; flex: 1; min-width: 50px; font-weight: bold; font-size: 1.1em; padding: 2px 6px;" } });
-		const editPencil = titleContainer.createDiv({ attr: { style: "cursor: pointer; opacity: 0.4; margin-left: 8px; display: flex; align-items: center;" } });
+		const titleSpan = titleContainer.createSpan({ text: group.name, cls: "frontmatter-sync-group-title" });
+		const titleInput = titleContainer.createEl("input", { type: "text", value: group.name, cls: ["frontmatter-sync-group-title-input", "frontmatter-sync-hidden"] });
+		const editPencil = titleContainer.createDiv({ cls: "frontmatter-sync-group-title-edit" });
 
 		setIcon(editPencil, "pencil");
 
 		const toggleEdit = () => {
-			titleSpan.style.display = "none";
-			editPencil.style.display = "none";
-			titleInput.style.display = "block";
+			titleSpan.addClass("frontmatter-sync-hidden");
+			editPencil.addClass("frontmatter-sync-hidden");
+			titleInput.removeClass("frontmatter-sync-hidden");
 			titleInput.focus();
 			titleInput.select();
 		};
 
 		const saveEdit = async () => {
-			if (titleInput.style.display === "none") return;
+			if (titleInput.hasClass("frontmatter-sync-hidden")) return;
 			group.name = titleInput.value.trim() || "Unnamed Group";
 			titleSpan.innerText = group.name;
-			titleInput.style.display = "none";
-			titleSpan.style.display = "block";
-			editPencil.style.display = "flex";
+			titleInput.addClass("frontmatter-sync-hidden");
+			titleSpan.removeClass("frontmatter-sync-hidden");
+			editPencil.removeClass("frontmatter-sync-hidden");
 			await this.plugin.saveSettings();
 		};
 
 		titleSpan.addEventListener("dblclick", toggleEdit);
 		editPencil.addEventListener("click", toggleEdit);
-		titleInput.addEventListener("blur", saveEdit);
-		titleInput.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Escape") saveEdit(); });
+		titleInput.addEventListener("blur", () => void saveEdit());
+		titleInput.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Escape") void saveEdit(); });
 	}
 
 	private renderPair(pairsContainer: HTMLElement, group: RelationGroup, groupIndex: number, pair: RelationPair, pairIndex: number) {
@@ -531,16 +529,15 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 
 				btn.setIcon(pair.enabled ? "eye" : "eye-off");
-				pairSetting.settingEl.style.opacity = pair.enabled ? "1" : "0.4";
-				pairSetting.settingEl.style.filter = pair.enabled ? "none" : "grayscale(100%)";
+				pairSetting.settingEl.toggleClass("frontmatter-sync-is-disabled", !pair.enabled);
 			}))
 			.addText(text => {
 				forwardInput = text.inputEl;
-				text.setPlaceholder("e.g., south").setValue(pair.forward).onChange(async (value) => { pair.forward = value; await this.plugin.saveSettings(); });
+				text.setPlaceholder("E.g., south").setValue(pair.forward).onChange(async (value) => { pair.forward = value; await this.plugin.saveSettings(); });
 			})
 			.addText(text => {
 				inverseInput = text.inputEl;
-				text.setPlaceholder("e.g., north").setValue(pair.inverse).onChange(async (value) => { pair.inverse = value; await this.plugin.saveSettings(); });
+				text.setPlaceholder("E.g., north").setValue(pair.inverse).onChange(async (value) => { pair.inverse = value; await this.plugin.saveSettings(); });
 			})
 			.addExtraButton(btn => btn.setIcon("trash").onClick(async () => {
 				group.pairs.splice(pairIndex, 1);
@@ -548,38 +545,23 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 				this.refresh();
 			}));
 
-		this.stylePairSetting(pairSetting.settingEl, pair, forwardInput, inverseInput, groupIndex, pairIndex);
-		this.setupPairDragAndDrop(pairSetting.settingEl, groupIndex, pairIndex, pair.enabled);
+		this.stylePairSetting(pairSetting.settingEl, pair, forwardInput, groupIndex, pairIndex);
+		this.setupPairDragAndDrop(pairSetting.settingEl, groupIndex, pairIndex);
 
 		if (forwardInput && inverseInput) {
 			new PropertySuggest(this.app, forwardInput, this.keysArray, inverseInput);
-			new PropertySuggest(this.app, inverseInput, this.keysArray, undefined, async () => {
+			new PropertySuggest(this.app, inverseInput, this.keysArray, undefined, () => {
 				if (!pair.forward && !pair.inverse) return;
 				group.pairs.push({ forward: "", inverse: "", enabled: true });
 				this.focusTarget = { groupIndex, pairIndex: group.pairs.length - 1 };
-				await this.plugin.saveSettings();
-				this.refresh();
+				void this.plugin.saveSettings().then(() => this.refresh());
 			});
 		}
 	}
 
-	private stylePairSetting(el: HTMLElement, pair: RelationPair, forwardInput: HTMLInputElement | null, inverseInput: HTMLInputElement | null, groupIndex: number, pairIndex: number) {
-		Object.assign(el.style, { borderTop: "none", padding: "6px 0", flexWrap: "nowrap", gap: "8px" });
-
-		const infoBox = el.querySelector('.setting-item-info') as HTMLElement;
-		if (infoBox) infoBox.style.display = "none";
-
-		const controlBox = el.querySelector('.setting-item-control') as HTMLElement;
-		if (controlBox) Object.assign(controlBox.style, { justifyContent: "flex-start", width: "100%", flex: "1" });
-
-		[forwardInput, inverseInput].forEach(input => {
-			if (input) Object.assign(input.style, { flex: "1 1 50px", minWidth: "0", width: "100%" });
-		});
-
-		if (!pair.enabled) {
-			el.style.opacity = "0.4";
-			el.style.filter = "grayscale(100%)";
-		}
+	private stylePairSetting(el: HTMLElement, pair: RelationPair, forwardInput: HTMLInputElement | null, groupIndex: number, pairIndex: number) {
+		el.addClass("frontmatter-sync-pair");
+		el.toggleClass("frontmatter-sync-is-disabled", !pair.enabled);
 
 		if (this.focusTarget && this.focusTarget.groupIndex === groupIndex && this.focusTarget.pairIndex === pairIndex) {
 			window.setTimeout(() => forwardInput?.focus(), 20);
@@ -587,47 +569,46 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 		}
 	}
 
-	private setupPairDragAndDrop(el: HTMLElement, groupIndex: number, pairIndex: number, enabled: boolean) {
+	private setupPairDragAndDrop(el: HTMLElement, groupIndex: number, pairIndex: number) {
 		el.draggable = true;
-		el.style.cursor = "grab";
 
 		el.addEventListener("dragstart", (e) => {
 			e.stopPropagation();
 			this.draggedPairData = { groupIndex, pairIndex };
 			if (e.dataTransfer) { e.dataTransfer.setData("text/plain", "pair"); e.dataTransfer.effectAllowed = "move"; }
-			el.style.opacity = "0.3";
+			el.addClass("frontmatter-sync-is-dragging");
 		});
 
 		el.addEventListener("dragend", () => {
 			this.draggedPairData = null;
-			el.style.opacity = enabled ? "1" : "0.4";
-			el.style.borderTop = "";
+			el.removeClasses(["frontmatter-sync-is-dragging", "frontmatter-sync-drop-before"]);
 		});
 
 		el.addEventListener("dragover", (e) => {
 			if (this.draggedGroupIndex !== null) return;
 			e.preventDefault();
 			e.stopPropagation();
-			el.style.borderTop = "2px solid var(--interactive-accent)";
+			el.addClass("frontmatter-sync-drop-before");
 		});
 
-		el.addEventListener("dragleave", () => el.style.borderTop = "");
+		el.addEventListener("dragleave", () => el.removeClass("frontmatter-sync-drop-before"));
 
-		el.addEventListener("drop", async (e) => {
+		el.addEventListener("drop", (e) => {
 			if (this.draggedGroupIndex !== null) return;
 			e.preventDefault();
 			e.stopPropagation();
-			el.style.borderTop = "";
-
-			if (this.draggedPairData !== null) {
-				const fromGroup = this.draggedPairData.groupIndex;
-				const fromPair = this.draggedPairData.pairIndex;
-				const movedItem = this.plugin.settings.relationGroups[fromGroup].pairs.splice(fromPair, 1)[0];
-				this.plugin.settings.relationGroups[groupIndex].pairs.splice(pairIndex, 0, movedItem);
-				this.draggedPairData = null;
-				await this.plugin.saveSettings();
-				this.refresh();
-			}
+			el.removeClass("frontmatter-sync-drop-before");
+			void this.handlePairDrop(groupIndex, pairIndex);
 		});
+	}
+
+	private async handlePairDrop(groupIndex: number, pairIndex: number) {
+		if (this.draggedPairData === null) return;
+		const groups = this.plugin.settings.relationGroups;
+		const [movedItem] = groups[this.draggedPairData.groupIndex]?.pairs.splice(this.draggedPairData.pairIndex, 1) ?? [];
+		if (movedItem) groups[groupIndex]?.pairs.splice(pairIndex, 0, movedItem);
+		this.draggedPairData = null;
+		await this.plugin.saveSettings();
+		this.refresh();
 	}
 }
