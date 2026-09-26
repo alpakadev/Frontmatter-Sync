@@ -206,18 +206,18 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	}
 
 	private showUnifiedSyncPrompt(pendingSyncs: PendingSync[], context: "startup" | "new_files", fileCount: number = 0) {
-		const notice = new Notice("", 0);
-		notice.noticeEl.empty();
-
 		const message = context === "startup"
 			? `Frontmatter Sync: Startup scan found ${pendingSyncs.length} pending backlink(s).`
 			: `Frontmatter Sync: Detected ${fileCount === 1 ? "1 new file" : `${fileCount} new/modified files`} with ${pendingSyncs.length} pending backlink(s).`;
 
-		notice.noticeEl.createDiv({ text: message, attr: { style: "margin-bottom: 12px; font-weight: 500;" } });
+		const content = createFragment();
+		content.createDiv({ text: message, cls: "frontmatter-sync-notice-message" });
 
-		const btnContainer = notice.noticeEl.createDiv({ attr: { style: "display: flex; gap: 8px; justify-content: flex-end;" } });
-		const syncBtn = btnContainer.createEl("button", { text: "Sync All", cls: "mod-cta" });
-		const ignoreBtn = btnContainer.createEl("button", { text: "Ignore All" });
+		const btnContainer = content.createDiv({ cls: "frontmatter-sync-notice-buttons" });
+		const syncBtn = btnContainer.createEl("button", { text: "Sync all", cls: "mod-cta" });
+		const ignoreBtn = btnContainer.createEl("button", { text: "Ignore all" });
+
+		const notice = new Notice(content, 0);
 
 		ignoreBtn.onclick = () => notice.hide();
 		syncBtn.onclick = async () => {
@@ -235,7 +235,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		const loadedData = await this.loadData();
+		const loadedData = (await this.loadData()) as Partial<FrontmatterSyncSettings> | null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 		this.settings.notifications = Object.assign({}, DEFAULT_SETTINGS.notifications, loadedData?.notifications);
 		this.settings.formatting = Object.assign({}, DEFAULT_SETTINGS.formatting, loadedData?.formatting);

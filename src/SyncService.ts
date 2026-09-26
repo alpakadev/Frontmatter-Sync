@@ -111,17 +111,18 @@ export class SyncService {
 
         try {
             let resultingFm: Record<string, unknown> = {};
-            await this.app.fileManager.processFrontMatter(file, (fm) => {
+            await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                 for (const group of this.settings.relationGroups) {
                     if (!group.enabled) continue;
                     for (const pair of group.pairs) {
                         if (!pair.enabled) continue;
                         const keys = [pair.forward, pair.inverse].filter(Boolean);
                         for (const key of keys) {
-                            if (!fm[key]) continue;
+                            const value = fm[key];
+                            if (!value) continue;
 
                             const formatStr = (s: string) => {
-                                return s.replace(REGEX.WIKI_LINK_GLOBAL, (match, inner) => {
+                                return s.replace(REGEX.WIKI_LINK_GLOBAL, (match: string, inner: string) => {
                                     if (inner.includes("/")) {
                                         const basename = inner.split("/").pop()?.split("#")[0];
                                         return `[[${inner}|${basename}]]`;
@@ -130,10 +131,10 @@ export class SyncService {
                                 });
                             };
 
-                            if (Array.isArray(fm[key])) {
-                                fm[key] = fm[key].map(v => typeof v === "string" ? formatStr(v) : v);
-                            } else if (typeof fm[key] === "string") {
-                                fm[key] = formatStr(fm[key]);
+                            if (Array.isArray(value)) {
+                                fm[key] = value.map((v: unknown) => typeof v === "string" ? formatStr(v) : v);
+                            } else if (typeof value === "string") {
+                                fm[key] = formatStr(value);
                             }
                         }
                     }
@@ -199,9 +200,9 @@ export class SyncService {
             let didChange = false;
             let resultingFm: Record<string, unknown> = {};
 
-            await this.app.fileManager.processFrontMatter(targetFile, (fm) => {
+            await this.app.fileManager.processFrontMatter(targetFile, (fm: Record<string, unknown>) => {
                 const existing = fm[inverseKey];
-                const existingArray = Array.isArray(existing)
+                const existingArray: unknown[] = Array.isArray(existing)
                     ? existing
                     : (typeof existing === "string" && existing.trim() !== "" ? existing.split(",").map((s: string) => s.trim()) : []);
 
@@ -213,24 +214,23 @@ export class SyncService {
                     });
 
                     if (!alreadyExists) {
-                        if (fm[inverseKey] === undefined || fm[inverseKey] === null) {
+                        if (existing === undefined || existing === null) {
                             fm[inverseKey] = [sourceLink];
-                        } else if (Array.isArray(fm[inverseKey])) {
-                            fm[inverseKey].push(sourceLink);
-                        } else if (typeof fm[inverseKey] === "string") {
+                        } else if (Array.isArray(existing)) {
+                            existing.push(sourceLink);
+                        } else if (typeof existing === "string") {
                             // Upgrade raw strings to proper Obsidian arrays to prevent Properties UI corruption
-                            if (fm[inverseKey].trim() === "") {
+                            if (existing.trim() === "") {
                                 fm[inverseKey] = sourceLink;
                             } else {
-                                fm[inverseKey] = [fm[inverseKey], sourceLink];
+                                fm[inverseKey] = [existing, sourceLink];
                             }
                         }
                         didChange = true;
                     }
                 } else if (action === "remove") {
-                    if (Array.isArray(fm[inverseKey])) {
-                        const originalLength = fm[inverseKey].length;
-                        fm[inverseKey] = fm[inverseKey].filter((rawLink: unknown) => {
+                    if (Array.isArray(existing)) {
+                        const filtered = existing.filter((rawLink: unknown) => {
                             if (typeof rawLink !== "string") return true;
                             const parsed = this.linkService.parseFrontmatterEntry(rawLink);
                             if (parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path)?.path === sourceFile.path) {
@@ -238,15 +238,16 @@ export class SyncService {
                             }
                             return rawLink !== sourceLink;
                         });
-                        if (fm[inverseKey].length !== originalLength) didChange = true;
-                    } else if (typeof fm[inverseKey] === "string") {
-                        const parsed = this.linkService.parseFrontmatterEntry(fm[inverseKey]);
+                        fm[inverseKey] = filtered;
+                        if (filtered.length !== existing.length) didChange = true;
+                    } else if (typeof existing === "string") {
+                        const parsed = this.linkService.parseFrontmatterEntry(existing);
                         if (parsed.isValid && this.app.metadataCache.getFirstLinkpathDest(parsed.target, targetFile.path)?.path === sourceFile.path) {
                             fm[inverseKey] = "";
                             didChange = true;
                         } else {
-                            if (fm[inverseKey].includes(sourceLink)) {
-                                fm[inverseKey] = fm[inverseKey].replace(sourceLink, "").replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
+                            if (existing.includes(sourceLink)) {
+                                fm[inverseKey] = existing.replace(sourceLink, "").replace(/,\s*,/g, ",").replace(/^,\s*|\s*,$/g, "").trim();
                                 didChange = true;
                             }
                         }
@@ -263,7 +264,7 @@ export class SyncService {
             }
         } catch (error) {
             this.clearWritingGuard(targetFile.path);
-            new Notice(`Error syncing to ${targetFile?.basename || target}`);
+            new Notice(`Error syncing to ${targetFile.basename}`);
             console.error(error);
         }
     }
@@ -278,7 +279,7 @@ export class SyncService {
             const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
             if (!(sourceFile instanceof TFile)) continue;
 
-            if (++iterations % 100 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+            if (++iterations % 100 === 0) await new Promise(resolve => window.setTimeout(resolve, 0));
 
             for (const group of this.settings.relationGroups) {
                 if (!group.enabled) continue;
@@ -312,6 +313,6 @@ export class SyncService {
         for (const sync of pending) {
             await this.modifyTargetNote(sync.targetFile, sync.sourceFile, sync.inverseKey, "add");
         }
-        new Notice(`Bulk Sync Complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
+        new Notice(`Bulk sync complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
     }
-}
+}
