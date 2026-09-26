@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "frontmatter-sync",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "Obsidian plugin that keeps two-way relationships between notes in sync through frontmatter properties",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

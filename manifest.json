@@ -3,9 +3,8 @@
 	"name": "Frontmatter Sync",
 	"version": "1.0.0",
 	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
+	"description": "Keep two-way relationships between notes in sync through frontmatter properties.",
 	"author": "Melik Özcelik",
-	"authorUrl": "https://github.com/alpakadev/Frontmatter-Sync",
-	"fundingUrl": "https://github.com/alpakadev/Frontmatter-Sync",
+	"authorUrl": "https://github.com/alpakadev",
 	"isDesktopOnly": false
 }
