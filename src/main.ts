@@ -93,6 +93,9 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	}
 
 	private async handleFileChange(file: TFile, data: string, cache: CachedMetadata) {
+		// Settings may have changed while this change was queued.
+		if (this.snapshotTimeoutId !== null) this.refreshSnapshots();
+
 		const currentFm = (cache.frontmatter || {}) as Record<string, unknown>;
 
 		if (this.syncService.isWriting(file.path)) {
