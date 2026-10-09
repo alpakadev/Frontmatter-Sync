@@ -3,12 +3,14 @@ import { parseYaml } from "obsidian";
 // Obsidian reports "no frontmatter" both for a note without properties and for one whose
 // YAML can't be parsed, e.g. while it is half-typed in source mode. Only the first case
 // means the note's relations were really removed.
+// Call this only when the metadata cache has no frontmatter for `text`.
 export function hasUnreadableFrontmatter(text: string): boolean {
     const lines = text.split(/\r?\n/);
     if (lines[0]?.trimEnd() !== "---") return false;
 
+    // Without a closing line Obsidian doesn't treat the block as frontmatter at all.
     const end = lines.findIndex((line, i) => i > 0 && line.trimEnd() === "---");
-    if (end === -1) return true;
+    if (end === -1) return false;
 
     try {
         const parsed: unknown = parseYaml(lines.slice(1, end).join("\n"));

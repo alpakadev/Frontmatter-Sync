@@ -54,6 +54,19 @@ export class SyncService {
 
     // --- DATA TRACKING ---
 
+    public getTrackedKeys(): Set<string> {
+        const keys = new Set<string>();
+        for (const group of this.settings.relationGroups) {
+            if (!group.enabled) continue;
+            for (const pair of group.pairs) {
+                if (!pair.enabled) continue;
+                if (pair.forward) keys.add(pair.forward);
+                if (pair.inverse) keys.add(pair.inverse);
+            }
+        }
+        return keys;
+    }
+
     public getTrackedFrontmatter(fm: Record<string, unknown> | null | undefined): Record<string, unknown> {
         if (!fm) return {};
         const tracked: Record<string, unknown> = {};
@@ -193,7 +206,7 @@ export class SyncService {
         // Only notes have frontmatter. Writing it into a linked canvas, PDF or image would corrupt it.
         if (targetFile.extension !== "md") return;
 
-        const linkText =this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
+        const linkText = this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
         let sourceLink = `[[${linkText}]]`;
         if (this.settings.formatting?.useAliasForPaths && linkText !== sourceFile.basename) {
             sourceLink = `[[${linkText}|${sourceFile.basename}]]`;

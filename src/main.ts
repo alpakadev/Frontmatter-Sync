@@ -20,6 +20,9 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	private indexRetries = new Map<string, number>();
 	private vaultReady = false;
 
+	private trackedKeys = new Set<string>();
+	private snapshotTimeoutId: number | null = null;
+
 	async onload() {
 		await this.loadSettings();
 
@@ -35,6 +38,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	onunload() {
 		this.changeTimers.forEach(timer => window.clearTimeout(timer));
 		if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
+		if (this.snapshotTimeoutId !== null) window.clearTimeout(this.snapshotTimeoutId);
 		this.syncService.clearAllGuards();
 		this.changeTimers.clear();
 		this.prevFm.clear();
@@ -50,6 +54,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 			}
 		}
 
+		this.trackedKeys = this.syncService.getTrackedKeys();
 		this.vaultReady = true;
 
 		if (this.settings.notifications.checkOnStartup) {
@@ -59,13 +64,13 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	}
 
 	private registerVaultEvents() {
-		this.registerEvent(this.app.metadataCache.on("changed", (file, _data, cache) => this.debounceFileChange(file, cache)));
+		this.registerEvent(this.app.metadataCache.on("changed", (file, data, cache) => this.debounceFileChange(file, data, cache)));
 		this.registerEvent(this.app.vault.on("create", (file) => this.handleCreation(file)));
 		this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.handleRename(file, oldPath)));
 		this.registerEvent(this.app.vault.on("delete", (file) => this.handleDeletion(file)));
 	}
 
-	private debounceFileChange(file: TFile, cache: CachedMetadata) {
+	private debounceFileChange(file: TFile, data: string, cache: CachedMetadata) {
 		if (!this.vaultReady) {
 			if (cache?.frontmatter) {
 				this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(cache.frontmatter));
@@ -78,13 +83,13 @@ export default class FrontmatterSyncPlugin extends Plugin {
 
 		const timer = window.setTimeout(() => {
 			this.changeTimers.delete(file.path);
-			void this.handleFileChange(file, cache);
+			void this.handleFileChange(file, data, cache);
 		}, TIMERS.FILE_CHANGE_DEBOUNCE_MS);
 
 		this.changeTimers.set(file.path, timer);
 	}
 
-	private async handleFileChange(file: TFile, cache: CachedMetadata) {
+	private async handleFileChange(file: TFile, data: string, cache: CachedMetadata) {
 		const currentFm = (cache.frontmatter || {}) as Record<string, unknown>;
 
 		if (this.syncService.isWriting(file.path)) {
@@ -99,7 +104,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 
 		// Broken YAML would otherwise read as "every link removed" and strip all backlinks.
 		// Keep the last good snapshot and wait for the next readable save.
-		if (!cache.frontmatter && Object.keys(previousFm).length > 0 && await this.isFrontmatterUnreadable(file)) return;
+		if (!cache.frontmatter && Object.keys(previousFm).length > 0 && hasUnreadableFrontmatter(data)) return;
 
 		if (await this.syncService.enforceAliasFormatting(file, currentFm)) return;
 
@@ -115,12 +120,38 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(currentFm));
 	}
 
-	private async isFrontmatterUnreadable(file: TFile): Promise<boolean> {
-		try {
-			return hasUnreadableFrontmatter(await this.app.vault.read(file));
-		} catch {
-			return false;
+	// Notes are only snapshotted for the properties configured at the time. When a pair is
+	// added, enabled or renamed, record the current values of its keys, so the next edit
+	// diffs against them and removed links are propagated. Keys tracked before keep their
+	// snapshot, so changes still waiting to be processed are not lost.
+	public refreshSnapshots() {
+		if (this.snapshotTimeoutId !== null) {
+			window.clearTimeout(this.snapshotTimeoutId);
+			this.snapshotTimeoutId = null;
 		}
+		if (!this.vaultReady) return;
+
+		const keys = this.syncService.getTrackedKeys();
+		const newKeys = Array.from(keys).filter(key => !this.trackedKeys.has(key));
+		this.trackedKeys = keys;
+		if (newKeys.length === 0) return;
+
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (!fm) continue;
+
+			const snapshot = this.prevFm.get(file.path) ?? {};
+			for (const key of newKeys) {
+				if (fm[key] !== undefined) snapshot[key] = structuredClone(fm[key]);
+				else delete snapshot[key];
+			}
+			this.prevFm.set(file.path, snapshot);
+		}
+	}
+
+	private scheduleSnapshotRefresh() {
+		if (this.snapshotTimeoutId !== null) window.clearTimeout(this.snapshotTimeoutId);
+		this.snapshotTimeoutId = window.setTimeout(() => this.refreshSnapshots(), TIMERS.SNAPSHOT_REFRESH_DELAY_MS);
 	}
 
 	private handleCreation(file: TAbstractFile) {
@@ -226,7 +257,8 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		// Read live metadata rather than the change snapshot, which only holds the
 		// properties that were configured when Obsidian started.
 		for (const sourceFile of this.app.vault.getMarkdownFiles()) {
-			const sourceFm = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter;
+			// Fall back to the last good snapshot while a note's YAML can't be parsed.
+			const sourceFm = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter ?? this.prevFm.get(sourceFile.path);
 			if (!sourceFm) continue;
 
 			for (const group of this.settings.relationGroups) {
@@ -300,5 +332,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		// Debounced: the pair key fields save on every keystroke.
+		this.scheduleSnapshotRefresh();
 	}
 }
