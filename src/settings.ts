@@ -305,7 +305,8 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 				.setWarning()
 				.onClick(async () => {
 					btn.setButtonText("Scanning...").setDisabled(true);
-					const pending = await this.plugin.syncService.previewBulkSync(this.plugin.getFrontmatterCache());
+					this.plugin.refreshSnapshots();
+					const pending = await this.plugin.syncService.previewBulkSync();
 					btn.setButtonText("Run scan").setDisabled(false);
 					new BulkSyncModal(this.app, this.plugin, pending).open();
 				})

@@ -54,6 +54,19 @@ export class SyncService {
 
     // --- DATA TRACKING ---
 
+    public getTrackedKeys(): Set<string> {
+        const keys = new Set<string>();
+        for (const group of this.settings.relationGroups) {
+            if (!group.enabled) continue;
+            for (const pair of group.pairs) {
+                if (!pair.enabled) continue;
+                if (pair.forward) keys.add(pair.forward);
+                if (pair.inverse) keys.add(pair.inverse);
+            }
+        }
+        return keys;
+    }
+
     public getTrackedFrontmatter(fm: Record<string, unknown> | null | undefined): Record<string, unknown> {
         if (!fm) return {};
         const tracked: Record<string, unknown> = {};
@@ -190,6 +203,9 @@ export class SyncService {
             return;
         }
 
+        // Only notes have frontmatter. Writing it into a linked canvas, PDF or image would corrupt it.
+        if (targetFile.extension !== "md") return;
+
         const linkText = this.app.metadataCache.fileToLinktext(sourceFile, targetFile.path, true);
         let sourceLink = `[[${linkText}]]`;
         if (this.settings.formatting?.useAliasForPaths && linkText !== sourceFile.basename) {
@@ -271,21 +287,22 @@ export class SyncService {
 
     // --- BULK SYNC LOGIC ---
 
-    public async previewBulkSync(prevFm: Map<string, Record<string, unknown>>): Promise<PendingSync[]> {
+    // Reads live metadata so pairs added since startup are scanned too.
+    public async previewBulkSync(): Promise<PendingSync[]> {
         const pending: PendingSync[] = [];
         let iterations = 0;
 
-        for (const [sourcePath, previousFm] of prevFm.entries()) {
-            const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
-            if (!(sourceFile instanceof TFile)) continue;
-
+        for (const sourceFile of this.app.vault.getMarkdownFiles()) {
             if (++iterations % 100 === 0) await new Promise(resolve => window.setTimeout(resolve, 0));
+
+            const sourceFm = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter;
+            if (!sourceFm) continue;
 
             for (const group of this.settings.relationGroups) {
                 if (!group.enabled) continue;
                 for (const pair of group.pairs) {
                     for (const dir of this.getDirections(pair)) {
-                        this.evaluateMissingLinks(sourceFile, previousFm[dir.from], dir.to, pending);
+                        this.evaluateMissingLinks(sourceFile, sourceFm[dir.from], dir.to, pending);
                     }
                 }
             }
@@ -297,7 +314,7 @@ export class SyncService {
         const targets = this.linkService.getResolvedLinks(sourceLinks, sourceFile.path);
 
         for (const target of targets.resolved) {
-            if (!target.file) continue;
+            if (!target.file || target.file.extension !== "md") continue;
             if (!this.hasBacklink(target.file, inverseKey, sourceFile)) {
                 pendingOut.push({ sourceName: sourceFile.basename, sourceFile, targetFile: target.file, inverseKey });
             }

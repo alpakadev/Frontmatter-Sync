@@ -3,6 +3,7 @@ export const TIMERS = {
     NEW_FILE_QUEUE_DELAY_MS: 2000,
     WRITING_GUARD_FALLBACK_MS: 5000,
     NEW_FILE_INDEX_MAX_RETRIES: 5,
+    SNAPSHOT_REFRESH_DELAY_MS: 500,
 } as const;
 
 export const REGEX = {
