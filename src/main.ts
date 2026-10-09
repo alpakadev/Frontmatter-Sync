@@ -21,7 +21,6 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	private vaultReady = false;
 
 	private trackedKeys = new Set<string>();
-	private snapshotTimeoutId: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -38,7 +37,6 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	onunload() {
 		this.changeTimers.forEach(timer => window.clearTimeout(timer));
 		if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
-		if (this.snapshotTimeoutId !== null) window.clearTimeout(this.snapshotTimeoutId);
 		this.syncService.clearAllGuards();
 		this.changeTimers.clear();
 		this.prevFm.clear();
@@ -124,11 +122,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	// added, enabled or renamed, record the current values of its keys, so the next edit
 	// diffs against them and removed links are propagated. Keys tracked before keep their
 	// snapshot, so changes still waiting to be processed are not lost.
-	public refreshSnapshots() {
-		if (this.snapshotTimeoutId !== null) {
-			window.clearTimeout(this.snapshotTimeoutId);
-			this.snapshotTimeoutId = null;
-		}
+	private refreshSnapshots() {
 		if (!this.vaultReady) return;
 
 		const keys = this.syncService.getTrackedKeys();
@@ -137,6 +131,9 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		if (newKeys.length === 0) return;
 
 		for (const file of this.app.vault.getMarkdownFiles()) {
+			// A queued change still diffs against the old snapshot, so links it adds under the new keys sync.
+			if (this.changeTimers.has(file.path)) continue;
+
 			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
 			if (!fm) continue;
 
@@ -147,11 +144,6 @@ export default class FrontmatterSyncPlugin extends Plugin {
 			}
 			this.prevFm.set(file.path, snapshot);
 		}
-	}
-
-	private scheduleSnapshotRefresh() {
-		if (this.snapshotTimeoutId !== null) window.clearTimeout(this.snapshotTimeoutId);
-		this.snapshotTimeoutId = window.setTimeout(() => this.refreshSnapshots(), TIMERS.SNAPSHOT_REFRESH_DELAY_MS);
 	}
 
 	private handleCreation(file: TAbstractFile) {
@@ -331,8 +323,9 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	}
 
 	async saveSettings() {
+		// Pair edits apply immediately, so update the snapshot before any queued change runs.
+		// This only scans the vault when the set of tracked keys changed.
+		this.refreshSnapshots();
 		await this.saveData(this.settings);
-		// Debounced: the pair key fields save on every keystroke.
-		this.scheduleSnapshotRefresh();
 	}
 }
