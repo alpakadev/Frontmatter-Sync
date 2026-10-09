@@ -27,6 +27,8 @@ For symmetrical relationships (e.g., `siblings`), simply set both the forward an
 
 * **Vault Maintenance:** Use the "Run Scan" button to audit your vault. The plugin will analyze all configured relation pairs and identify notes that are missing their corresponding backlinks.
 * **Notifications:** Toggle background sync success messages, plain text warnings, and interactive ghost link prompts.
+* **Background check:** Before showing a sync prompt for new or pulled notes, the plugin waits for Obsidian to index them and confirms a backlink is really missing. Notes that are already in sync never trigger a notice. On by default.
+* **Auto sync:** Add missing backlinks for new notes and the startup check without asking. Off by default.
 * **Group Management:** Use the master toggle on a folder header to instantly disable or enable all relation pairs within that group.
 * **Inline Editing:** Double-click any folder name, or click the pencil icon, to rename it inline.
 

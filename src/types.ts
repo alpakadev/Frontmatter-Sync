@@ -7,6 +7,8 @@ export interface NotificationSettings {
     ghostLinkPrompt: boolean;
     checkOnStartup: boolean;
     renameDetection: boolean;
+    verifyBeforePrompt: boolean;
+    autoSync: boolean;
 }
 
 export interface FormattingSettings {
@@ -54,9 +56,11 @@ export const DEFAULT_SETTINGS: FrontmatterSyncSettings = {
         ghostLinkWarning: true,
         ghostLinkPrompt: true,
         checkOnStartup: false,
-        renameDetection: true
+        renameDetection: true,
+        verifyBeforePrompt: true,
+        autoSync: false
     },
     formatting: {
         useAliasForPaths: true
     }
-};
+};

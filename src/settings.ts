@@ -342,6 +342,8 @@ export class FrontmatterSyncSettingTab extends PluginSettingTab {
 				);
 		};
 
+		createNotificationToggle("Check sync status in the background", "Wait until new or pulled notes are indexed and confirm a backlink is really missing before notifying. If everything is already in sync, no notice is shown.", "verifyBeforePrompt");
+		createNotificationToggle("Auto sync", "Add missing backlinks for new notes and the startup check automatically instead of asking first.", "autoSync");
 		createNotificationToggle("Check files on startup", "Scan the vault for missing bidirectional links automatically when Obsidian starts.", "checkOnStartup");
 		createNotificationToggle("Background sync success", "Show a popup when a target note is updated in the background.", "backgroundSync");
 		createNotificationToggle("Plain text warning", "Warn when you type plain text instead of a valid [[WikiLink]].", "plainTextWarning");

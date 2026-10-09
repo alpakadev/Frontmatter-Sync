@@ -285,7 +285,7 @@ export class SyncService {
                 if (!group.enabled) continue;
                 for (const pair of group.pairs) {
                     for (const dir of this.getDirections(pair)) {
-                        this.evaluateMissingLinks(sourceFile, previousFm[dir.from], dir.to, prevFm, pending);
+                        this.evaluateMissingLinks(sourceFile, previousFm[dir.from], dir.to, pending);
                     }
                 }
             }
@@ -293,26 +293,43 @@ export class SyncService {
         return pending;
     }
 
-    private evaluateMissingLinks(sourceFile: TFile, sourceLinks: unknown, inverseKey: string, allPrevFm: Map<string, Record<string, unknown>>, pendingOut: PendingSync[]) {
+    private evaluateMissingLinks(sourceFile: TFile, sourceLinks: unknown, inverseKey: string, pendingOut: PendingSync[]) {
         const targets = this.linkService.getResolvedLinks(sourceLinks, sourceFile.path);
 
         for (const target of targets.resolved) {
             if (!target.file) continue;
-
-            const targetFm = allPrevFm.get(target.file.path) || {};
-            const backLinks = this.linkService.getResolvedLinks(targetFm[inverseKey], target.file.path);
-            const hasBacklink = backLinks.resolved.some(r => r.file?.path === sourceFile.path);
-
-            if (!hasBacklink) {
+            if (!this.hasBacklink(target.file, inverseKey, sourceFile)) {
                 pendingOut.push({ sourceName: sourceFile.basename, sourceFile, targetFile: target.file, inverseKey });
             }
         }
     }
 
-    public async executeBulkSync(pending: PendingSync[]) {
+    // Reads the target's current metadata rather than a cached snapshot, so notes that
+    // arrived with their backlinks already in place (e.g. via git pull) count as synced.
+    public hasBacklink(targetFile: TFile, inverseKey: string, sourceFile: TFile): boolean {
+        const targetFm = this.app.metadataCache.getFileCache(targetFile)?.frontmatter;
+        const backLinks = this.linkService.getResolvedLinks(targetFm?.[inverseKey], targetFile.path);
+        return backLinks.resolved.some(r => r.file?.path === sourceFile.path);
+    }
+
+    public filterUnsynced(pending: PendingSync[]): PendingSync[] {
+        const seen = new Set<string>();
+        return pending.filter(sync => {
+            const key = `${sync.sourceFile.path}|${sync.targetFile.path}|${sync.inverseKey}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return !this.hasBacklink(sync.targetFile, sync.inverseKey, sync.sourceFile);
+        });
+    }
+
+    public async applyPendingSyncs(pending: PendingSync[]) {
         for (const sync of pending) {
             await this.modifyTargetNote(sync.targetFile, sync.sourceFile, sync.inverseKey, "add");
         }
+    }
+
+    public async executeBulkSync(pending: PendingSync[]) {
+        await this.applyPendingSyncs(pending);
         new Notice(`Bulk sync complete: Successfully added ${pending.length} missing bidirectional link(s)!`);
     }
-}
+}

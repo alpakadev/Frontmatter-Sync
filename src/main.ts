@@ -16,6 +16,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 
 	private newFilesQueue = new Set<TFile>();
 	private newFilesTimeoutId: number | null = null;
+	private indexRetries = new Map<string, number>();
 	private vaultReady = false;
 
 	async onload() {
@@ -37,6 +38,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		this.changeTimers.clear();
 		this.prevFm.clear();
 		this.newFilesQueue.clear();
+		this.indexRetries.clear();
 	}
 
 	public getFrontmatterCache(): Map<string, Record<string, unknown>> {
@@ -55,7 +57,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 
 		if (this.settings.notifications.checkOnStartup) {
 			const pending = await this.syncService.previewBulkSync(this.prevFm);
-			if (pending.length > 0) this.showUnifiedSyncPrompt(pending, "startup");
+			if (pending.length > 0) await this.handlePendingSyncs(pending, "startup");
 		}
 	}
 
@@ -116,11 +118,38 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		if (!this.vaultReady || !(file instanceof TFile) || file.extension !== "md" || file.basename.startsWith("Untitled")) return;
 
 		this.newFilesQueue.add(file);
+		this.scheduleNewFilesQueue();
+	}
+
+	private scheduleNewFilesQueue() {
 		if (this.newFilesTimeoutId !== null) window.clearTimeout(this.newFilesTimeoutId);
 
 		this.newFilesTimeoutId = window.setTimeout(() => {
+			this.newFilesTimeoutId = null;
 			void this.processNewFilesQueue();
 		}, TIMERS.NEW_FILE_QUEUE_DELAY_MS);
+	}
+
+	// Files Obsidian has not indexed yet look like they have no backlinks. Hold them back
+	// for another round so a burst of pulled notes is judged on their real frontmatter.
+	private takeIndexedFiles(): TFile[] {
+		const queued = Array.from(this.newFilesQueue);
+		this.newFilesQueue.clear();
+		if (!this.settings.notifications.verifyBeforePrompt) return queued;
+
+		const ready: TFile[] = [];
+		for (const file of queued) {
+			const retries = this.indexRetries.get(file.path) ?? 0;
+			if (this.app.metadataCache.getFileCache(file) || retries >= TIMERS.NEW_FILE_INDEX_MAX_RETRIES) {
+				this.indexRetries.delete(file.path);
+				ready.push(file);
+			} else {
+				this.indexRetries.set(file.path, retries + 1);
+				this.newFilesQueue.add(file);
+			}
+		}
+		if (this.newFilesQueue.size > 0) this.scheduleNewFilesQueue();
+		return ready;
 	}
 
 	private handleRename(file: TAbstractFile, oldPath: string) {
@@ -151,6 +180,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 			this.prevFm.delete(file.path);
 			this.syncService.clearWritingGuard(file.path);
 			this.newFilesQueue.delete(file);
+			this.indexRetries.delete(file.path);
 			this.clearChangeTimer(file.path);
 		} else if (file instanceof TFolder) {
 			for (const key of Array.from(this.prevFm.keys())) {
@@ -172,13 +202,14 @@ export default class FrontmatterSyncPlugin extends Plugin {
 	}
 
 	async processNewFilesQueue() {
-		if (!this.settings.notifications.ghostLinkPrompt) {
+		const { ghostLinkPrompt, autoSync } = this.settings.notifications;
+		if (!ghostLinkPrompt && !autoSync) {
 			this.newFilesQueue.clear();
+			this.indexRetries.clear();
 			return;
 		}
 
-		const filesToProcess = Array.from(this.newFilesQueue);
-		this.newFilesQueue.clear();
+		const filesToProcess = this.takeIndexedFiles();
 		if (filesToProcess.length === 0) return;
 
 		const pendingSyncs: PendingSync[] = [];
@@ -202,7 +233,18 @@ export default class FrontmatterSyncPlugin extends Plugin {
 			}
 		}
 
-		if (pendingSyncs.length > 0) this.showUnifiedSyncPrompt(pendingSyncs, "new_files", filesToProcess.length);
+		const pending = this.syncService.filterUnsynced(pendingSyncs);
+		if (pending.length > 0) await this.handlePendingSyncs(pending, "new_files", filesToProcess.length);
+	}
+
+	private async handlePendingSyncs(pending: PendingSync[], context: "startup" | "new_files", fileCount: number = 0) {
+		if (this.settings.notifications.autoSync) {
+			await this.syncService.applyPendingSyncs(pending);
+			return;
+		}
+		if (context === "startup" || this.settings.notifications.ghostLinkPrompt) {
+			this.showUnifiedSyncPrompt(pending, context, fileCount);
+		}
 	}
 
 	private showUnifiedSyncPrompt(pendingSyncs: PendingSync[], context: "startup" | "new_files", fileCount: number = 0) {
@@ -225,12 +267,14 @@ export default class FrontmatterSyncPlugin extends Plugin {
 			syncBtn.disabled = true;
 			ignoreBtn.disabled = true;
 
-			for (const sync of pendingSyncs) {
-				await this.syncService.modifyTargetNote(sync.targetFile, sync.sourceFile, sync.inverseKey, "add");
-			}
+			// Notes may have been synced elsewhere while the prompt was open.
+			const stillPending = this.syncService.filterUnsynced(pendingSyncs);
+			await this.syncService.applyPendingSyncs(stillPending);
 
 			notice.hide();
-			if (this.settings.notifications.backgroundSync) new Notice(`Successfully synced ${pendingSyncs.length} relation(s)!`);
+			if (this.settings.notifications.backgroundSync) {
+				new Notice(stillPending.length > 0 ? `Successfully synced ${stillPending.length} relation(s)!` : "Frontmatter Sync: Everything is already in sync.");
+			}
 		};
 	}
 
