@@ -4,6 +4,7 @@ import { FrontmatterSyncSettingTab } from "./settings";
 import { LinkService } from "./LinkService";
 import { SyncService } from "./SyncService";
 import { TIMERS } from "./constants";
+import { hasUnreadableFrontmatter } from "./frontmatter";
 
 export default class FrontmatterSyncPlugin extends Plugin {
 	settings!: FrontmatterSyncSettings;
@@ -41,10 +42,6 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		this.indexRetries.clear();
 	}
 
-	public getFrontmatterCache(): Map<string, Record<string, unknown>> {
-		return this.prevFm;
-	}
-
 	private async initializeCache() {
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
@@ -56,7 +53,7 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		this.vaultReady = true;
 
 		if (this.settings.notifications.checkOnStartup) {
-			const pending = await this.syncService.previewBulkSync(this.prevFm);
+			const pending = await this.syncService.previewBulkSync();
 			if (pending.length > 0) await this.handlePendingSyncs(pending, "startup");
 		}
 	}
@@ -98,9 +95,13 @@ export default class FrontmatterSyncPlugin extends Plugin {
 			}
 		}
 
-		if (await this.syncService.enforceAliasFormatting(file, currentFm)) return;
-
 		const previousFm = this.prevFm.get(file.path) || {};
+
+		// Broken YAML would otherwise read as "every link removed" and strip all backlinks.
+		// Keep the last good snapshot and wait for the next readable save.
+		if (!cache.frontmatter && Object.keys(previousFm).length > 0 && await this.isFrontmatterUnreadable(file)) return;
+
+		if (await this.syncService.enforceAliasFormatting(file, currentFm)) return;
 
 		for (const group of this.settings.relationGroups) {
 			if (!group.enabled) continue;
@@ -112,6 +113,14 @@ export default class FrontmatterSyncPlugin extends Plugin {
 		}
 
 		this.prevFm.set(file.path, this.syncService.getTrackedFrontmatter(currentFm));
+	}
+
+	private async isFrontmatterUnreadable(file: TFile): Promise<boolean> {
+		try {
+			return hasUnreadableFrontmatter(await this.app.vault.read(file));
+		} catch {
+			return false;
+		}
 	}
 
 	private handleCreation(file: TAbstractFile) {
@@ -214,18 +223,21 @@ export default class FrontmatterSyncPlugin extends Plugin {
 
 		const pendingSyncs: PendingSync[] = [];
 
-		for (const [sourcePath, previousFm] of this.prevFm.entries()) {
-			const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
-			if (!(sourceFile instanceof TFile)) continue;
+		// Read live metadata rather than the change snapshot, which only holds the
+		// properties that were configured when Obsidian started.
+		for (const sourceFile of this.app.vault.getMarkdownFiles()) {
+			const sourceFm = this.app.metadataCache.getFileCache(sourceFile)?.frontmatter;
+			if (!sourceFm) continue;
 
 			for (const group of this.settings.relationGroups) {
 				if (!group.enabled) continue;
 				for (const pair of group.pairs) {
 					for (const dir of this.syncService.getDirections(pair)) {
-						const targets = this.linkService.extractLinks(previousFm[dir.from]);
+						const targets = this.linkService.extractLinks(sourceFm[dir.from]);
 
 						for (const newFile of filesToProcess) {
-							const isMatch = targets.valid.some(raw => raw === newFile.basename || this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
+							// Match by resolved path only: another note can share the new file's name.
+							const isMatch = targets.valid.some(raw => this.app.metadataCache.getFirstLinkpathDest(raw, sourceFile.path)?.path === newFile.path);
 							if (isMatch) pendingSyncs.push({ sourceName: sourceFile.basename, sourceFile, targetFile: newFile, inverseKey: dir.to });
 						}
 					}
